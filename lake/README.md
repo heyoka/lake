@@ -6,6 +6,10 @@ An Erlang RabbitMQ Streams Connector.
 
     $ rebar3 compile
 
+## Running Tests
+
+    $ RABBITMQ_HOST=172.17.0.2 rebar3 ct
+
 ## Implemented Messages
 
 * [x] DeclarePublisher

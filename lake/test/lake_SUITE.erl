@@ -31,7 +31,14 @@ all() ->
         metadata
     ].
 
-host() -> {172, 17, 0, 2}.
+host() ->
+    case os:getenv("RABBITMQ_HOST") of
+        false ->
+            throw("RABBITMQ_HOST not set");
+        Host ->
+            Host
+    end.
+
 port() -> 5552.
 stream() -> <<"test-stream">>.
 

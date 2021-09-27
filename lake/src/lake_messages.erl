@@ -94,9 +94,9 @@ parse(
 ) ->
     {delete_response, Corr, ResponseCode};
 parse(
-  <<?RESPONSE:1, ?METADATA:15, ?VERSION:16, Corr:32, Metadata0/binary>>
- ) ->
-    <<NumEndpoints:32,EndpointsAndMetadata/binary>> = Metadata0,
+    <<?RESPONSE:1, ?METADATA:15, ?VERSION:16, Corr:32, Metadata0/binary>>
+) ->
+    <<NumEndpoints:32, EndpointsAndMetadata/binary>> = Metadata0,
     {Endpoints, Rest} =
         parse_endpoints(NumEndpoints, EndpointsAndMetadata),
     StreamsMetadata =
@@ -315,13 +315,13 @@ store_offset(PublisherReference, Stream, Offset) ->
     PublisherReferenceSize = byte_size(PublisherReference),
     StreamSize = byte_size(Stream),
     <<
-      ?STORE_OFFSET:16,
-      ?VERSION:16,
-      PublisherReferenceSize:16,
-      PublisherReference:PublisherReferenceSize/binary,
-      StreamSize:16,
-      Stream:StreamSize/binary,
-      Offset:64
+        ?STORE_OFFSET:16,
+        ?VERSION:16,
+        PublisherReferenceSize:16,
+        PublisherReference:PublisherReferenceSize/binary,
+        StreamSize:16,
+        Stream:StreamSize/binary,
+        Offset:64
     >>.
 
 query_offset(CorrelationId, PublisherReference, Stream) ->
@@ -329,14 +329,14 @@ query_offset(CorrelationId, PublisherReference, Stream) ->
     StreamSize = byte_size(Stream),
 
     <<
-      ?REQUEST:1,
-      ?QUERY_OFFSET:15,
-      ?VERSION:16,
-      CorrelationId:32,
-      PublisherReferenceSize:16,
-      PublisherReference:PublisherReferenceSize/binary,
-      StreamSize:16,
-      Stream:StreamSize/binary
+        ?REQUEST:1,
+        ?QUERY_OFFSET:15,
+        ?VERSION:16,
+        CorrelationId:32,
+        PublisherReferenceSize:16,
+        PublisherReference:PublisherReferenceSize/binary,
+        StreamSize:16,
+        Stream:StreamSize/binary
     >>.
 
 unsubscribe(CorrelationId, SubscriptionId) ->
@@ -378,12 +378,12 @@ metadata(CorrelationId, Streams) ->
     StreamsCount = length(Streams),
     EncodedStreams = encode_list_of_strings(Streams),
     <<
-      ?REQUEST:1,
-      ?METADATA:15,
-      ?VERSION:16,
-      CorrelationId:32,
-      StreamsCount:32,
-      EncodedStreams/binary
+        ?REQUEST:1,
+        ?METADATA:15,
+        ?VERSION:16,
+        CorrelationId:32,
+        StreamsCount:32,
+        EncodedStreams/binary
     >>.
 
 parse_map(Bin) when is_binary(Bin) ->
@@ -433,35 +433,46 @@ parse_endpoints(NumEndpoints, Bin) ->
 
 parse_endpoints(0, Rest, Endpoints) ->
     {Endpoints, Rest};
-parse_endpoints(Cnt, <<Index:16,HostLength:16,Host:HostLength/binary,Port:32,Rest/binary>>, Acc) ->
+parse_endpoints(
+    Cnt, <<Index:16, HostLength:16, Host:HostLength/binary, Port:32, Rest/binary>>, Acc
+) ->
     EndpointMetadata = #{
-                         index => Index,
-                         host => Host,
-                         port => Port
-                        },
-    parse_endpoints(Cnt-1, Rest, [EndpointMetadata | Acc]).
+        index => Index,
+        host => Host,
+        port => Port
+    },
+    parse_endpoints(Cnt - 1, Rest, [EndpointMetadata | Acc]).
 
-parse_streams_metadata(<<NumStreams:32,Meta/binary>>) ->
+parse_streams_metadata(<<NumStreams:32, Meta/binary>>) ->
     parse_streams_metadata(NumStreams, Meta, []).
 
 parse_streams_metadata(0, <<>>, Acc) ->
     Acc;
 %% Error case
-parse_streams_metadata(NumStreams, <<StreamLength:16,Stream:StreamLength/binary,Code:16,-1:16/signed,0:32, Rest/binary>>, Acc) ->
+parse_streams_metadata(
+    NumStreams,
+    <<StreamLength:16, Stream:StreamLength/binary, Code:16, -1:16/signed, 0:32, Rest/binary>>,
+    Acc
+) ->
     StreamMetadata = #{
-                       stream => Stream,
-                       code => Code
-                      },
-    parse_streams_metadata(NumStreams - 1, Rest, [StreamMetadata|Acc]);
+        stream => Stream,
+        code => Code
+    },
+    parse_streams_metadata(NumStreams - 1, Rest, [StreamMetadata | Acc]);
 %% Success case
-parse_streams_metadata(NumStreams, <<StreamLength:16,Stream:StreamLength/binary,?RESPONSE_OK:16,LeaderIndex:16,ReplicasCount:32,ReplicasAndRest/binary>>, Acc) ->
+parse_streams_metadata(
+    NumStreams,
+    <<StreamLength:16, Stream:StreamLength/binary, ?RESPONSE_OK:16, LeaderIndex:16,
+        ReplicasCount:32, ReplicasAndRest/binary>>,
+    Acc
+) ->
     ReplicasSize = ReplicasCount * 2,
-    <<ReplicasBin:ReplicasSize/binary,Rest/binary>> = ReplicasAndRest,
-    Replicas = [ EndpointIndex || <<EndpointIndex:16>> <= ReplicasBin],
+    <<ReplicasBin:ReplicasSize/binary, Rest/binary>> = ReplicasAndRest,
+    Replicas = [EndpointIndex || <<EndpointIndex:16>> <= ReplicasBin],
     StreamMetadata = #{
-                       stream => Stream,
-                       leader_index => LeaderIndex,
-                       replicas_count => ReplicasCount,
-                       replicas => Replicas
-                      },
-    parse_streams_metadata(NumStreams - 1, Rest, [StreamMetadata|Acc]).
+        stream => Stream,
+        leader_index => LeaderIndex,
+        replicas_count => ReplicasCount,
+        replicas => Replicas
+    },
+    parse_streams_metadata(NumStreams - 1, Rest, [StreamMetadata | Acc]).
