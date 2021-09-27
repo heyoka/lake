@@ -1,0 +1,3 @@
+   @copyright 2021 sonnen eServices GmbH
+   @title lake - An Erlang RabbitMQ Streams Connector
+   @doc `lake' is an Erlang RabbitMQ Streams Connector. Please refer to the `lake' module for the API.
