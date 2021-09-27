@@ -78,7 +78,7 @@ subscribe_and_publish(_Config) ->
         chunk_id := 0, number_of_entries := 1, number_of_records := 1
     } = Info,
     ok = lake:unsubscribe(Connection, SubscriptionId),
-    ok = lake:delete_publisher(Connection, SubscriptionId),
+    ok = lake:delete_publisher(Connection, PublisherId),
     ok = lake:delete(Connection, Stream),
     ok = lake:stop(Connection),
     ok.
