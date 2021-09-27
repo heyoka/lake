@@ -44,7 +44,7 @@ An Erlang RabbitMQ Streams Connector.
 
 ## License
 
-Copyright 2019 sonnen eServices GmbH
+Copyright 2021 sonnen eServices GmbH
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
