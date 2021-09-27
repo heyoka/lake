@@ -17,6 +17,8 @@ lake:
   - rebar3 fmt --check
 
 lake_house:
+  variables:
+    LOCAL_LAKE: 1
   script:
   - cd lake_house
   - mix deps.get

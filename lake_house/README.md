@@ -4,9 +4,6 @@ An Elixir RabbitMQ Streams connector.
 
 ## Installation
 
-If [available in Hex](https://hex.pm/docs/publish), the package can be installed
-by adding `lake_house` to your list of dependencies in `mix.exs`:
-
 ```elixir
 def deps do
   [
@@ -15,10 +12,10 @@ def deps do
 end
 ```
 
-Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
-and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
-be found at [https://hexdocs.pm/lake_house](https://hexdocs.pm/lake_house).
+## Running Tests
 
+With `LOCAL_LAKE=1`, the `lake` dependency is used directly from this
+repository. Use this when developing something for `lake_house`.
 
 ## License
 
