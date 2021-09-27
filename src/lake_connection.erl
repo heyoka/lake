@@ -146,7 +146,7 @@ unsubscribe(Connection, SubscriptionId) ->
     end.
 
 metadata(Connection, Streams) ->
-    {metadata, _CorrelationId, Endpoints, Metadata} = gen_server:call(
+    {metadata_response, _CorrelationId, Endpoints, Metadata} = gen_server:call(
         Connection, {metadata, Streams}
     ),
     {ok, Endpoints, Metadata}.
@@ -239,7 +239,9 @@ stop(Connection) ->
     %% FIXME clean-up if caller dies
     pending_requests = #{},
     subscriptions = #{},
-    publishers = #{}
+    subscriptions_by_stream = #{},
+    publishers = #{},
+    publishers_by_stream = #{}
 }).
 
 init([CorrelationId]) ->
@@ -263,7 +265,7 @@ handle_call({declare_publisher, Publisher, Stream, PublisherId, PublisherReferen
         Corr, Stream, PublisherId, PublisherReference
     ),
     ok = send_message(Socket, DeclarePublisher),
-    State1 = register_pending_request(State0, Corr, From, {Publisher, PublisherId}),
+    State1 = register_pending_request(State0, Corr, From, {Publisher, PublisherId, Stream}),
     State2 = inc_correlation_id(State1),
     {noreply, State2};
 handle_call({publish_async, PublisherId, Messages}, From, State) ->
@@ -287,7 +289,7 @@ handle_call({delete_publisher, PublisherId}, From, State0) ->
     Socket = State0#state.socket,
     DeletePublisher = lake_messages:delete_publisher(Corr, PublisherId),
     ok = send_message(Socket, DeletePublisher),
-    State1 = register_pending_request(State0, Corr, From, []),
+    State1 = register_pending_request(State0, Corr, From, PublisherId),
     State2 = inc_correlation_id(State1),
     {noreply, State2};
 handle_call({credit, SubscriptionId, Credit}, _From, State) ->
@@ -326,7 +328,7 @@ handle_call(
         Corr, Stream, SubscriptionId, OffsetDefinition, Credit, Properties
     ),
     ok = send_message(Socket, Subscribe),
-    State1 = register_pending_request(State0, Corr, From, {Subscriber, SubscriptionId}),
+    State1 = register_pending_request(State0, Corr, From, {Subscriber, SubscriptionId, Stream}),
     State2 = inc_correlation_id(State1),
     {noreply, State2};
 handle_call({store_offset, PublisherReference, Stream, Offset}, _From, State) ->
@@ -363,16 +365,18 @@ handle_call(Call, _From, State) ->
 handle_cast(_Cast, State) ->
     {noreply, State}.
 
-%% FIXME can we avoid parsing here? Only determine where the message should end up and forward it to the owner
+%% FIXME can we avoid parsing here? Only determine where the message should end up and forward_and_reply it to the owner
 %% This might require to copy the binary slices (if the buffer holds multiple messages) - a large message might be referenced by multiple subscribers.
 handle_info({tcp, Socket, Packet}, State0 = #state{socket = Socket, rx_buf = Buf0}) ->
     inet:setopts(Socket, [{active, once}]),
-    Buf1 = <<Buf0/binary, Packet/binary>>,
-    {MessageByReceiver, BufRest} = split_by_receiver(Buf1),
-    State1 = update_subscriptions(State0, MessageByReceiver),
-    State2 = update_publishers(State1, MessageByReceiver),
-    State3 = forward_to_receivers(MessageByReceiver, State2),
-    {noreply, State3#state{rx_buf = BufRest}}.
+    {Messages, BufRest} = split_into_messages(<<Buf0/binary, Packet/binary>>),
+    State1 = add_new_subscriptions(Messages, State0),
+    State2 = add_new_publishers(Messages, State1),
+    forward_and_reply(Messages, State2),
+    State3 = clean_publishers(Messages, State2),
+    State4 = clean_subscriptions(Messages, State3),
+    State5 = clean_pending_requests(Messages, State4),
+    {noreply, State5#state{rx_buf = BufRest}}.
 
 %% FIXME handle_info({tcp_closed, Port}, State)
 
@@ -380,61 +384,222 @@ terminate(Reason, State) ->
     gen_tcp:close(State#state.socket),
     Reason.
 
-%%
-%% Helper Functions
-%%
-split_by_receiver(Buffer) ->
-    split_by_receiver(Buffer, []).
+split_into_messages(Buffer) ->
+    split_into_messages(Buffer, []).
 
-split_by_receiver(<<Size:32, Buf:Size/binary, Rest/binary>>, Acc) ->
-    Parsed = lake_messages:parse(Buf),
-    Receiver = receiver(Parsed),
-    split_by_receiver(Rest, [{Receiver, Parsed} | Acc]);
-split_by_receiver(Rest, Acc) ->
+split_into_messages(<<Size:32, Buf:Size/binary, Rest/binary>>, Acc) ->
+    split_into_messages(Rest, [lake_messages:parse(Buf) | Acc]);
+split_into_messages(Rest, Acc) ->
     {lists:reverse(Acc), Rest}.
 
-receiver({publish_confirm, PublisherId, _, _}) -> {publisher_id, PublisherId};
-receiver({deliver, SubscriptionId, _}) -> {subscription_id, SubscriptionId};
-receiver({declare_publisher_response, Corr, _}) -> {correlation_id, Corr};
-receiver({query_publisher_sequence_response, Corr, _, _}) -> {correlation_id, Corr};
-receiver({delete_publisher_response, Corr, _}) -> {correlation_id, Corr};
-receiver({create_response, Corr, _}) -> {correlation_id, Corr};
-receiver({delete_response, Corr, _}) -> {correlation_id, Corr};
-receiver({subscribe_response, Corr, _}) -> {correlation_id, Corr};
-receiver({query_offset_response, Corr, _, _}) -> {correlation_id, Corr};
-receiver(M = {unsubscribe_response, _, _}) -> M;
-receiver({metadata, Corr, _, _}) -> {correlation_id, Corr}.
+add_new_subscriptions(Messages, State) ->
+    lists:foldl(fun add_new_subscriptions1/2, State, Messages).
 
-forward_to_receivers([], State) ->
+add_new_subscriptions1({subscribe_response, Corr, ?RESPONSE_OK}, State0) ->
+    #state{pending_requests = #{Corr := {_From, {Subscriber, SubscriptionId, Stream}}}} = State0,
+    add_subscription(State0, SubscriptionId, Subscriber, Stream);
+add_new_subscriptions1({subscribe_response, _Corr, _ResponseCode}, State) ->
     State;
-forward_to_receivers([{{subscription_id, Id}, Message} | Rest], State) ->
-    #state{subscriptions = #{Id := Subscriber}} = State,
-    Subscriber ! Message,
-    forward_to_receivers(Rest, State);
-forward_to_receivers([{{correlation_id, Corr}, Message} | Rest], State) ->
-    #{Corr := {From, _Extra}} = State#state.pending_requests,
-    gen_server:reply(From, Message),
-    forward_to_receivers(Rest, deregister_pending(Corr, State));
-forward_to_receivers([{{publisher_id, Id}, Message} | Rest], State) ->
-    #state{publishers = #{Id := Publisher}} = State,
-    Publisher ! Message,
-    forward_to_receivers(Rest, State);
-forward_to_receivers([{{unsubscribe_response, Corr, _}, Message} | Rest], State) ->
-    #{Corr := {From, _Extra}} = State#state.pending_requests,
-    gen_server:reply(From, Message),
-    forward_to_receivers(Rest, deregister_pending(Corr, State)).
+add_new_subscriptions1(_Other, State) ->
+    State.
 
-deregister_pending(Key, State) ->
-    #state{
-        pending_requests = #{Key := {From, _Extra}}
-    } = State,
+add_subscription(State, SubscriptionId, Subscriber, Stream) ->
+    Subscriptions = State#state.subscriptions,
     State#state{
-        pending_requests =
-            maps:remove(
-                From,
-                maps:remove(Key, State#state.pending_requests)
+        subscriptions = Subscriptions#{SubscriptionId => {Subscriber, Stream}},
+        subscriptions_by_stream =
+            add_to_subscriptions_by_stream(
+                State#state.subscriptions_by_stream, Stream, SubscriptionId
             )
     }.
+
+remove_subscription(SubscriptionId, State) ->
+    #state{
+        subscriptions = Subscriptions,
+        subscriptions_by_stream = SubscriptionsByStream
+    } = State,
+    #{
+        SubscriptionId := {_Subscriber, Stream}
+    } = Subscriptions,
+    State#state{
+        subscriptions = maps:remove(SubscriptionId, Subscriptions),
+        subscriptions_by_stream = remove_subscription_by_stream(
+            SubscriptionsByStream, Stream, SubscriptionId
+        )
+    }.
+
+remove_subscription_by_stream(SubscriptionsByStream, Stream, SubscriptionId) ->
+    #{Stream := Subscriptions0} = SubscriptionsByStream,
+    Subscriptions1 = sets:del_element(SubscriptionId, Subscriptions0),
+    case sets:is_empty(Subscriptions1) of
+        true ->
+            maps:remove(Stream, SubscriptionsByStream);
+        false ->
+            SubscriptionsByStream#{Stream := Subscriptions1}
+    end.
+
+add_to_subscriptions_by_stream(SubscriptionsByStream, Stream, SubscriptionId) ->
+    SubscriptionIds = maps:get(Stream, SubscriptionsByStream, sets:new([{version, 2}])),
+    SubscriptionsByStream#{Stream => sets:add_element(SubscriptionId, SubscriptionIds)}.
+
+add_new_publishers(Messages, State) ->
+    lists:foldl(fun add_new_publishers1/2, State, Messages).
+
+add_new_publishers1({declare_publisher_response, Corr, ?RESPONSE_OK}, State0) ->
+    #state{pending_requests = #{Corr := {_From, {Publisher, PublisherId, Stream}}}} = State0,
+    add_publisher(State0, PublisherId, Publisher, Stream);
+add_new_publishers1({declare_publisher_response, _Corr, _}, State) ->
+    State;
+add_new_publishers1(_Other, State) ->
+    State.
+
+add_publisher(State, PublisherId, Publisher, Stream) ->
+    Publishers = State#state.publishers,
+    State#state{
+        publishers = Publishers#{PublisherId => Publisher},
+        publishers_by_stream = add_to_publishers_by_stream(
+            State#state.publishers_by_stream, Stream, PublisherId
+        )
+    }.
+
+add_to_publishers_by_stream(PublishersByStream, Stream, PublisherId) ->
+    Set = maps:get(Stream, PublishersByStream, sets:new([{version, 2}])),
+    PublishersByStream#{Stream => sets:add_element(PublisherId, Set)}.
+
+remove_publisher(PublisherId, State) ->
+    State#state{publishers = maps:remove(PublisherId, State#state.publishers)}.
+
+forward_and_reply(Messages, State) ->
+    lists:foreach(
+        fun(Message) -> forward_and_reply1(recipient_from_message(Message, State), Message) end,
+        Messages
+    ).
+
+forward_and_reply1({send, Pid}, Message) ->
+    Pid ! Message;
+forward_and_reply1({reply, From}, Message) ->
+    gen_server:reply(From, Message);
+forward_and_reply1(List, Message) when is_list(List) ->
+    lists:foreach(fun(Recipient) -> forward_and_reply1(Recipient, Message) end, List).
+
+recipient_from_message({declare_publisher_response, Corr, _}, State) ->
+    recipient_from_corr(Corr, State);
+recipient_from_message({publish_confirm, PublisherId, _, _}, State) ->
+    recipient_from_publishers(PublisherId, State);
+recipient_from_message({publish_error, PublisherId, _, _}, State) ->
+    recipient_from_publishers(PublisherId, State);
+recipient_from_message({query_publisher_sequence_response, Corr, _, _}, State) ->
+    recipient_from_corr(Corr, State);
+recipient_from_message({delete_publisher_response, Corr, _}, State) ->
+    recipient_from_corr(Corr, State);
+recipient_from_message({subscribe_response, Corr, _}, State) ->
+    recipient_from_corr(Corr, State);
+recipient_from_message({deliver, SubscriptionId, _}, State) ->
+    recipient_from_subscriptions(SubscriptionId, State);
+recipient_from_message({credit_response, SubscriptionId, _}, State) ->
+    recipient_from_subscriptions(SubscriptionId, State);
+recipient_from_message({query_offset_response, Corr, _, _}, State) ->
+    recipient_from_corr(Corr, State);
+recipient_from_message({unsubscribe_response, Corr, _}, State) ->
+    recipient_from_corr(Corr, State);
+recipient_from_message({create_response, Corr, _}, State) ->
+    recipient_from_corr(Corr, State);
+recipient_from_message({delete_response, Corr, _}, State) ->
+    recipient_from_corr(Corr, State);
+recipient_from_message({metadata_response, Corr, _, _}, State) ->
+    recipient_from_corr(Corr, State);
+recipient_from_message({metadata_update, _, Stream}, State) ->
+    recipients_from_stream(Stream, State).
+
+recipient_from_corr(Corr, State) ->
+    #state{
+        pending_requests = #{Corr := {From, _Extra}}
+    } = State,
+    {reply, From}.
+
+recipient_from_publishers(PublisherId, State) ->
+    #state{
+        publishers = #{PublisherId := Publisher}
+    } = State,
+    {send, Publisher}.
+
+recipient_from_subscriptions(SubscriptionId, State) ->
+    #state{
+        subscriptions = #{SubscriptionId := {Subscriber, _Stream}}
+    } = State,
+    {send, Subscriber}.
+
+recipients_from_stream(Stream, State) ->
+    #state{
+        subscriptions_by_stream = #{Stream := SubscriptionIds},
+        publishers_by_stream = #{Stream := PublisherIds}
+    } = State,
+    Subscribers =
+        [
+            begin
+                {Subscriber, _Stream} = maps:get(SubscriptionId, State#state.subscriptions),
+                {send, Subscriber}
+            end
+         || SubscriptionId <- sets:to_list(SubscriptionIds)
+        ],
+    Publishers =
+        [
+            begin
+                {Publisher, _Stream} = maps:get(PublisherId, State#state.subscriptions),
+                {send, Publisher}
+            end
+         || PublisherId <- sets:to_list(PublisherIds)
+        ],
+    Subscribers ++ Publishers.
+
+clean_publishers(Messages, State) ->
+    lists:foldl(fun clean_publishers1/2, State, Messages).
+
+clean_publishers1({delete_publisher_response, Corr, ?RESPONSE_OK}, State0) ->
+    #state{pending_requests = #{Corr := {_From, PublisherId}}} = State0,
+    remove_publisher(PublisherId, State0);
+clean_publishers1({delete_publisher_response, _Corr, _}, State) ->
+    State;
+clean_publishers1({metadata_update, ?RESPONSE_OK, _Stream}, _State) ->
+    exit("MetadataUpdate with ?RESPONSE_OK not handled");
+clean_publishers1({metadata_update, _, Stream}, State) ->
+    PublisherIds = publisher_ids_from_stream(State, Stream),
+    lists:foldl(fun remove_publisher/2, State, PublisherIds);
+clean_publishers1(_Other, State) ->
+    State.
+
+clean_subscriptions(Messages, State) ->
+    lists:foldl(fun clean_subscriptions1/2, State, Messages).
+
+clean_subscriptions1({unsubscribe_response, Corr, ?RESPONSE_OK}, State0) ->
+    #state{pending_requests = #{Corr := {_From, SubscriptionId}}} = State0,
+    remove_subscription(SubscriptionId, State0);
+clean_subscriptions1({unsubscribe_response, _Corr, _}, _State) ->
+    exit("UnsubscribeResponse without ?RESPONSE_OK not handled");
+clean_subscriptions1({metadata_update, ?RESPONSE_OK, _Stream}, _State) ->
+    exit("MetadataUpdate with ?RESPONSE_OK not handled");
+clean_subscriptions1({metadata_update, _, Stream}, State) ->
+    SubscriptionIds = subscription_ids_from_stream(State, Stream),
+    lists:foldl(fun remove_subscription/2, State, SubscriptionIds);
+clean_subscriptions1(_Other, State) ->
+    State.
+
+clean_pending_requests(Messages, State) ->
+    lists:foldl(fun clean_pending_requests1/2, State, Messages).
+
+clean_pending_requests1(Message, State0) ->
+    case lake_messages:message_to_correlation_id(Message) of
+        {ok, Corr} ->
+            #state{
+                pending_requests = #{Corr := {From, _Extra}}
+            } = State0,
+            PendingRequests = maps:remove(From, maps:remove(Corr, State0#state.pending_requests)),
+            State0#state{
+                pending_requests = PendingRequests
+            };
+        {error, _} ->
+            State0
+    end.
 
 frame(Message) when is_binary(Message) ->
     Size = byte_size(Message),
@@ -467,65 +632,18 @@ inc_correlation_id(State) ->
     Corr = State#state.correlation_id,
     State#state{correlation_id = Corr + 1}.
 
-update_subscriptions(State, []) ->
-    State;
-update_subscriptions(State, [{{unsubscribe_response, Corr, ?RESPONSE_OK}, _} | Rest]) ->
-    #state{
-        pending_requests = #{Corr := {_From, SubscriptionId}},
-        subscriptions = Subscriptions
-    } = State,
-    update_subscriptions(
-        State#state{
-            subscriptions = maps:remove(SubscriptionId, Subscriptions)
-        },
-        Rest
-    );
-update_subscriptions(State, [{{correlation_id, Corr}, Message} | Rest]) ->
-    case is_positive_subscribe_response(Message) of
-        true ->
-            #state{
-                pending_requests = #{Corr := {_From, {Subscriber, SubscriptionId}}},
-                subscriptions = Subscriptions
-            } = State,
-            update_subscriptions(
-                State#state{
-                    subscriptions =
-                        Subscriptions#{SubscriptionId => Subscriber}
-                },
-                Rest
-            );
-        false ->
-            update_subscriptions(State, Rest)
-    end;
-update_subscriptions(State, [{{subscription_id, _}, _} | Rest]) ->
-    update_subscriptions(State, Rest);
-update_subscriptions(State, [{{publisher_id, _}, _} | Rest]) ->
-    update_subscriptions(State, Rest).
+subscription_ids_from_stream(State, Stream) ->
+    case State#state.subscriptions_by_stream of
+        #{Stream := Subscriptions} ->
+            sets:to_list(Subscriptions);
+        _ ->
+            []
+    end.
 
-is_positive_subscribe_response({subscribe_response, _, ?RESPONSE_OK}) -> true;
-is_positive_subscribe_response(_) -> false.
-
-update_publishers(State, []) ->
-    State;
-update_publishers(State, [{{correlation_id, Corr}, Message} | Rest]) ->
-    case is_positive_publisher_response(Message) of
-        true ->
-            #state{
-                pending_requests = #{Corr := {_From, {Publisher, PublisherId}}},
-                publishers = Publishers
-            } = State,
-            update_publishers(
-                State#state{
-                    publishers =
-                        Publishers#{PublisherId => Publisher}
-                },
-                Rest
-            );
-        false ->
-            update_publishers(State, Rest)
-    end;
-update_publishers(State, [_ | Rest]) ->
-    update_publishers(State, Rest).
-
-is_positive_publisher_response({declare_publisher_response, _, ?RESPONSE_OK}) -> true;
-is_positive_publisher_response(_) -> false.
+publisher_ids_from_stream(State, Stream) ->
+    case State#state.publishers_by_stream of
+        #{Stream := Publishers} ->
+            sets:to_list(Publishers);
+        _ ->
+            []
+    end.

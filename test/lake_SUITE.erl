@@ -12,7 +12,9 @@
     query_publisher_sequence/1,
     query_publisher_sequence_errors/1,
     store_and_query_offset/1,
-    metadata/1
+    metadata/1,
+    delete_without_create/1,
+    metadata_update/1
 ]).
 
 -include("response_codes.hrl").
@@ -28,7 +30,9 @@ all() ->
         query_publisher_sequence,
         query_publisher_sequence_errors,
         store_and_query_offset,
-        metadata
+        metadata,
+        delete_without_create,
+        metadata_update
     ].
 
 host() ->
@@ -79,6 +83,8 @@ subscribe_and_publish(_Config) ->
     } = Info,
     ok = lake:unsubscribe(Connection, SubscriptionId),
     ok = lake:delete_publisher(Connection, PublisherId),
+    %% FIXME check state after deletion - maybe eunit..
+    %% FIXME check that no pending requests are still present in the state
     ok = lake:delete(Connection, Stream),
     ok = lake:stop(Connection),
     ok.
@@ -176,6 +182,40 @@ metadata(_Config) ->
     ok = lake:create(Connection, Stream, []),
     {ok, _Endpoints, _Metadata} = lake:metadata(Connection, [Stream, <<"does not exist">>]),
     ok = lake:delete(Connection, Stream),
+    ok = lake:stop(Connection),
+    ok.
+
+delete_without_create(_Config) ->
+    {ok, Connection} = lake:connect(host(), port(), <<"guest">>, <<"guest">>, <<"/">>),
+    {error, _} = lake:delete(Connection, stream()).
+
+metadata_update(_Config) ->
+    %% MetadataUpdate may be triggered if a stream with active subscriptions is deleted
+    {ok, Connection} = lake:connect(host(), port(), <<"guest">>, <<"guest">>, <<"/">>),
+    Stream = stream(),
+    ok = lake:create(Connection, Stream, []),
+    ok = lake:subscribe(Connection, Stream, 1, first, 10, []),
+    ok = lake:declare_publisher(Connection, Stream, 1, <<"publisher">>),
+    ok = lake:delete(Connection, Stream),
+    %% Ensure that the deletion above is handled and a metadata update has been sent
+    {ok, _Endpoints, _Metadata} = lake:metadata(Connection, [Stream]),
+    %% We expect the message `metadata_update' twice; once for the subscriber, once for the publisher
+    receive
+        {metadata_update, ?RESPONSE_STREAM_NOT_AVAILABLE, Stream} ->
+            ok;
+        Other1 ->
+            throw({unexpected, Other1})
+    after 1000 ->
+        exit(timeout)
+    end,
+    receive
+        {metadata_update, ?RESPONSE_STREAM_NOT_AVAILABLE, Stream} ->
+            ok;
+        Other2 ->
+            throw({unexpected, Other2})
+    after 1000 ->
+        exit(timeout)
+    end,
     ok = lake:stop(Connection),
     ok.
 

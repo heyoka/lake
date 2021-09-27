@@ -1,6 +1,6 @@
 -module(lake_messages).
 
--export([parse/1]).
+-export([parse/1, message_to_correlation_id/1]).
 
 -export([
     peer_properties/2,
@@ -45,6 +45,7 @@
 -define(CREATE, 13).
 -define(DELETE, 14).
 -define(METADATA, 15).
+-define(METADATA_UPDATE, 16).
 -define(PEER_PROPERTIES, 17).
 -define(SASL_HANDSHAKE, 18).
 -define(SASL_AUTHENTICATE, 19).
@@ -101,7 +102,11 @@ parse(
         parse_endpoints(NumEndpoints, EndpointsAndMetadata),
     StreamsMetadata =
         parse_streams_metadata(Rest),
-    {metadata, Corr, Endpoints, StreamsMetadata};
+    {metadata_response, Corr, Endpoints, StreamsMetadata};
+parse(
+    <<?METADATA_UPDATE:16, ?VERSION:16, ResponseCode:16, StreamSize:16, Stream:StreamSize/binary>>
+) ->
+    {metadata_update, ResponseCode, Stream};
 parse(
     <<?RESPONSE:1, ?PEER_PROPERTIES:15, ?VERSION:16, Corr:32, ResponseCode:16,
         _PeerPropertiesCount:32, PeerProperties/binary>>
@@ -476,3 +481,24 @@ parse_streams_metadata(
         replicas => Replicas
     },
     parse_streams_metadata(NumStreams - 1, Rest, [StreamMetadata | Acc]).
+
+message_to_correlation_id({declare_publisher_response, Corr, _}) ->
+    {ok, Corr};
+message_to_correlation_id({query_publisher_sequence, Corr, _, _}) ->
+    {ok, Corr};
+message_to_correlation_id({delete_publisher_response, Corr, _}) ->
+    {ok, Corr};
+message_to_correlation_id({subscribe_response, Corr, _}) ->
+    {ok, Corr};
+message_to_correlation_id({query_offset_response, Corr, _, _}) ->
+    {ok, Corr};
+message_to_correlation_id({unsubscribe_response, Corr, _}) ->
+    {ok, Corr};
+message_to_correlation_id({create_response, Corr, _}) ->
+    {ok, Corr};
+message_to_correlation_id({delete_response, Corr, _}) ->
+    {ok, Corr};
+message_to_correlation_id({metadata_response, Corr, _, _}) ->
+    {ok, Corr};
+message_to_correlation_id(Other) ->
+    {error, {no_correlation_id, Other}}.
