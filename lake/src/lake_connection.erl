@@ -196,7 +196,6 @@ tune(Socket, MaybeTune) ->
             <<Size:32, Tune:Size/binary>> ->
                 {lake_messages:parse(Tune), <<>>}
         end,
-    logger:info("Tune: FrameMax = ~p, Heatbeat = ~p~n", [FrameMax, Heartbeat]),
     send_message(Socket, lake_messages:tune(FrameMax, Heartbeat)),
     {FrameMax, Heartbeat}.
 
