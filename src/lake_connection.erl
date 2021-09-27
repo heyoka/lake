@@ -41,7 +41,7 @@ connect(Host, Port, User, Password, Vhost) ->
 %% CorrId)
 declare_publisher(Connection, Stream, PublisherId, PublisherReference) ->
     Result = gen_server:call(
-        Connection, {declare_publisher, Stream, PublisherId, PublisherReference}
+        Connection, {declare_publisher, self(), Stream, PublisherId, PublisherReference}
     ),
     case Result of
         {declare_publisher_response, _, ?RESPONSE_OK} ->
@@ -52,13 +52,28 @@ declare_publisher(Connection, Stream, PublisherId, PublisherReference) ->
 
 publish_sync(Connection, PublisherId, Messages) ->
     %% FIXME encode messages here?
-    case gen_server:call(Connection, {publish_sync, PublisherId, Messages}) of
-        {publish_confirm, PublisherId, PublishingIdCount, PublishingIds} ->
-            {ok, {PublishingIdCount, PublishingIds}};
-        {publish_confirm, WrongPublisherId, _, _} ->
-            {error, {wrong_publisher_id, WrongPublisherId}};
-        {publish_error, _, PublishingIdCount, PublishingCodeById} ->
-            {error, {publish_error, PublishingIdCount, PublishingCodeById}}
+    %% We need to wait for all confirmations
+    MessageCount = length(Messages),
+    ok = gen_server:call(Connection, {publish_async, PublisherId, Messages}),
+    wait_for_confirmations(MessageCount, []).
+
+wait_for_confirmations(0, PublishingIds) ->
+    [
+        case Result of
+            {Id, Code} ->
+                {Id, lake_utils:response_code_to_atom(Code)};
+            Id ->
+                {Id, lake_utils:response_code_to_atom(?RESPONSE_OK)}
+        end
+     || Result <- PublishingIds
+    ];
+wait_for_confirmations(Count, PublishingIds0) ->
+    %% FIXME if the connection dies while we wait here, will this process also stopped?
+    receive
+        {publish_confirm, _PublisherId, PublishingIdCount, PublishingIds} ->
+            wait_for_confirmations(Count - PublishingIdCount, PublishingIds ++ PublishingIds0);
+        {publish_error, _PublisherId, PublishingIdCount, PublishingCodeById} ->
+            wait_for_confirmations(Count - PublishingIdCount, PublishingCodeById ++ PublishingIds0)
     end.
 
 query_publisher_sequence(Connection, PublisherReference, Stream) ->
@@ -227,7 +242,8 @@ stop(Connection) ->
     %% * Maps from PublisherId to publisher and vice versa for sync publishing
     %% FIXME clean-up if caller dies
     pending = #{},
-    subscriptions = #{}
+    subscriptions = #{},
+    publishers = #{}
 }).
 
 init([CorrelationId]) ->
@@ -244,22 +260,22 @@ handle_continue(CorrelationId, wait_for_socket) ->
         exit(timeout)
     end.
 
-handle_call({declare_publisher, Stream, PublisherId, PublisherReference}, From, State0) ->
+handle_call({declare_publisher, Publisher, Stream, PublisherId, PublisherReference}, From, State0) ->
     Corr = State0#state.correlation_id,
     Socket = State0#state.socket,
     DeclarePublisher = lake_messages:declare_publisher(
         Corr, Stream, PublisherId, PublisherReference
     ),
     ok = send_message(Socket, DeclarePublisher),
-    State1 = register_pending(State0, Corr, From, []),
+    State1 = register_pending(State0, Corr, From, {Publisher, PublisherId}),
     State2 = inc_correlation_id(State1),
     {noreply, State2};
-handle_call({publish_sync, PublisherId, Messages}, From, State0) ->
-    Socket = State0#state.socket,
+handle_call({publish_async, PublisherId, Messages}, From, State) ->
+    Socket = State#state.socket,
     Publish = lake_messages:publish(PublisherId, Messages),
+    gen_server:reply(From, ok),
     ok = send_message(Socket, Publish),
-    State1 = register_pending(State0, PublisherId, From, []),
-    {noreply, State1};
+    {noreply, State};
 handle_call({query_publisher_sequence, PublisherReference, Stream}, From, State0) ->
     Corr = State0#state.correlation_id,
     Socket = State0#state.socket,
@@ -358,8 +374,9 @@ handle_info({tcp, Socket, Packet}, State0 = #state{socket = Socket, rx_buf = Buf
     Buf1 = <<Buf0/binary, Packet/binary>>,
     {MessageByReceiver, BufRest} = split_by_receiver(Buf1),
     State1 = update_subscriptions(State0, MessageByReceiver),
-    State2 = forward_to_receivers(MessageByReceiver, State1),
-    {noreply, State2#state{rx_buf = BufRest}}.
+    State2 = update_publishers(State1, MessageByReceiver),
+    State3 = forward_to_receivers(MessageByReceiver, State2),
+    {noreply, State3#state{rx_buf = BufRest}}.
 
 %% FIXME handle_info({tcp_closed, Port}, State)
 
@@ -403,9 +420,9 @@ forward_to_receivers([{{correlation_id, Corr}, Message} | Rest], State) ->
     gen_server:reply(From, Message),
     forward_to_receivers(Rest, deregister_pending(Corr, State));
 forward_to_receivers([{{publisher_id, Id}, Message} | Rest], State) ->
-    #{Id := {From, _Extra}} = State#state.pending,
-    gen_server:reply(From, Message),
-    forward_to_receivers(Rest, deregister_pending(Id, State));
+    #state{publishers = #{Id := Publisher}} = State,
+    Publisher ! Message,
+    forward_to_receivers(Rest, State);
 forward_to_receivers([{{unsubscribe_response, Corr, _}, Message} | Rest], State) ->
     #{Corr := {From, _Extra}} = State#state.pending,
     gen_server:reply(From, Message),
@@ -491,3 +508,28 @@ update_subscriptions(State, [{{publisher_id, _}, _} | Rest]) ->
 
 is_positive_subscribe_response({subscribe_response, _, ?RESPONSE_OK}) -> true;
 is_positive_subscribe_response(_) -> false.
+
+update_publishers(State, []) ->
+    State;
+update_publishers(State, [{{correlation_id, Corr}, Message} | Rest]) ->
+    case is_positive_publisher_response(Message) of
+        true ->
+            #state{
+                pending = #{Corr := {_From, {Publisher, PublisherId}}},
+                publishers = Publishers
+            } = State,
+            update_publishers(
+                State#state{
+                    publishers =
+                        Publishers#{PublisherId => Publisher}
+                },
+                Rest
+            );
+        false ->
+            update_publishers(State, Rest)
+    end;
+update_publishers(State, [_ | Rest]) ->
+    update_publishers(State, Rest).
+
+is_positive_publisher_response({declare_publisher_response, _, ?RESPONSE_OK}) -> true;
+is_positive_publisher_response(_) -> false.
