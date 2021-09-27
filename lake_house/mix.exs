@@ -8,6 +8,7 @@ defmodule LakeHouse.MixProject do
       elixir: "~> 1.12",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
+      package: package(),
       name: "Grains",
       description: description(),
       docs: [
@@ -25,10 +26,9 @@ defmodule LakeHouse.MixProject do
 
   defp deps do
     [
-      {:ex_doc, "~> 0.21", only: :dev, runtime: false},
+      {:ex_doc, "~> 0.21", only: :dev, runtime: false}
     ]
   end
-
 
   defp description() do
     "An Elixir RabbitMQ Streams Connector"

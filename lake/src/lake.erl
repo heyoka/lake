@@ -30,7 +30,6 @@ tls_connect(Host, User, Password, Vhost) ->
 tls_connect(_Host, _Port, _User, _Password, _Vhost) ->
     throw(not_implemented).
 
-
 %% @doc Establish a connection.
 %% @see connect/5
 connect(Host, User, Password, Vhost) ->

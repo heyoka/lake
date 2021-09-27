@@ -131,7 +131,9 @@ unsubscribe(Connection, SubscriptionId) ->
     end.
 
 metadata(Connection, Streams) ->
-    {metadata, _CorrelationId, Endpoints, Metadata} = gen_server:call(Connection, {metadata, Streams}),
+    {metadata, _CorrelationId, Endpoints, Metadata} = gen_server:call(
+        Connection, {metadata, Streams}
+    ),
     {ok, Endpoints, Metadata}.
 
 connect1(Host, Port, User, Password, Vhost) when
