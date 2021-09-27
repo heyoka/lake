@@ -6,22 +6,10 @@ services:
 
 before_script:
   - mix local.rebar --force
-  - mix local.hex --force
 
 lake:
   variables:
     RABBITMQ_HOST: rabbitmq
   script:
-  - cd lake/
   - rebar3 ct
   - rebar3 fmt --check
-
-lake_house:
-  variables:
-    LOCAL_LAKE: 1
-    RABBITMQ_HOST: rabbitmq
-  script:
-  - cd lake_house
-  - mix deps.get
-  - mix test
-  - mix format --check-formatted

@@ -39,7 +39,12 @@ connect(Host, User, Password, Vhost) ->
 %% @doc Establish a connection.
 %% @see connect/4
 connect(Host, Port, User, Password, Vhost) ->
-    lake_connection:connect(Host, Port, User, Password, Vhost).
+    lake_connection:connect(normalize_host(Host), Port, User, Password, Vhost).
+
+normalize_host(Host) when is_binary(Host) ->
+    binary_to_list(Host);
+normalize_host(Host) when is_list(Host); is_atom(Host); is_tuple(Host) ->
+    Host.
 
 %% @doc Stop a connection.
 stop(Connection) ->
