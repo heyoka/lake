@@ -66,7 +66,7 @@ subscribe_and_publish(_Config) ->
     PublisherReference = <<"my-publisher">>,
     ok = lake:declare_publisher(Connection, Stream, PublisherId, PublisherReference),
     Message = <<"Hello, world!">>,
-    {ok, {PublisherId, [1]}} = lake:publish_sync(Connection, PublisherId, [{1, Message}]),
+    [{1, ok}] = lake:publish_sync(Connection, PublisherId, [{1, Message}]),
     {ok, {[Message], Info}} =
         receive
             {deliver, 1, OsirisChunk} ->
@@ -92,7 +92,7 @@ credit(_Config) ->
     ok = lake:subscribe(Connection, Stream, SubscriptionId, first, InitialCredits, []),
     PublisherId = 1,
     ok = lake:declare_publisher(Connection, Stream, PublisherId, <<"my-publisher">>),
-    {ok, {PublisherId, [1]}} = lake:publish_sync(Connection, PublisherId, [{1, <<"Hello, World">>}]),
+    _ = lake:publish_sync(Connection, PublisherId, [{1, <<"Hello, World">>}]),
     receive
         {deliver, 1, _} ->
             throw(unexpected)
@@ -107,7 +107,7 @@ credit(_Config) ->
         after 5000 ->
             exit(timeout)
         end,
-    {ok, {PublisherId, [1]}} = lake:publish_sync(Connection, PublisherId, [{1, <<"Hello, World">>}]),
+    _ = lake:publish_sync(Connection, PublisherId, [{1, <<"Hello, World">>}]),
     receive
         {deliver, 1, _} ->
             throw(unexpected)
@@ -132,11 +132,11 @@ query_publisher_sequence(_Config) ->
     PublisherId = 0,
     PublisherReference = <<"my-publisher">>,
     ok = lake:declare_publisher(Connection, Stream, PublisherId, PublisherReference),
-    {ok, 0} = lake:query_publisher_sequence(Connection, PublisherReference, Stream),
+    _ = lake:query_publisher_sequence(Connection, PublisherReference, Stream),
     Message = <<"Hello, world!">>,
-    {ok, _} = lake:publish_sync(Connection, PublisherId, [{1, Message}]),
+    _ = lake:publish_sync(Connection, PublisherId, [{1, Message}]),
     {ok, 1} = lake:query_publisher_sequence(Connection, PublisherReference, Stream),
-    {ok, _} = lake:publish_sync(Connection, PublisherId, [{2, Message}]),
+    _ = lake:publish_sync(Connection, PublisherId, [{2, Message}]),
     {ok, 2} = lake:query_publisher_sequence(Connection, PublisherReference, Stream),
     ok = lake:delete_publisher(Connection, PublisherId),
     ok = lake:delete(Connection, Stream),
@@ -161,7 +161,7 @@ store_and_query_offset(_Config) ->
     ok = lake:declare_publisher(Connection, Stream, PublisherId, PublisherReference),
     {ok, 0} = lake:query_offset(Connection, PublisherReference, Stream),
     MessagesWithIds = [{Id, <<"Hello">>} || Id <- lists:seq(1, 10)],
-    {ok, _} = lake:publish_sync(Connection, PublisherId, MessagesWithIds),
+    _ = lake:publish_sync(Connection, PublisherId, MessagesWithIds),
     {ok, 0} = lake:query_offset(Connection, PublisherReference, Stream),
     ok = lake:store_offset(Connection, PublisherReference, Stream, 5),
     {ok, 5} = lake:query_offset(Connection, PublisherReference, Stream),
