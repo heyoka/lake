@@ -21,7 +21,8 @@
     store_offset/3,
     query_offset/3,
     unsubscribe/2,
-    metadata/2
+    metadata/2,
+    heartbeat/0
 ]).
 
 -export([chunk_to_messages/1]).
@@ -54,6 +55,7 @@
 -define(TUNE, 20).
 -define(OPEN, 21).
 -define(CLOSE, 22).
+-define(HEARTBEAT, 23).
 
 parse(
     <<?RESPONSE:1, ?DECLARE_PUBLISHER:15, ?VERSION:16, Corr:32, ResponseCode:16>>
@@ -146,6 +148,10 @@ parse(
     <<?RESPONSE:1, ?OPEN:15, ?VERSION:16, Corr:32, ResponseCode:16>>
 ) ->
     {ok, {open_response, Corr, ResponseCode}};
+parse(
+    <<?HEARTBEAT:16, ?VERSION:16>>
+) ->
+    {heartbeat};
 parse(Unknown) ->
     {error, {unknown, Unknown}}.
 
@@ -422,6 +428,12 @@ metadata(CorrelationId, Streams) ->
         CorrelationId:32,
         StreamsCount:32,
         EncodedStreams/binary
+    >>.
+
+heartbeat() ->
+    <<
+        ?HEARTBEAT:16,
+        ?VERSION:16
     >>.
 
 parse_map(Bin) when is_binary(Bin) ->

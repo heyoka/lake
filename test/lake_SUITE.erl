@@ -15,7 +15,8 @@
     metadata/1,
     delete_without_create/1,
     metadata_update/1,
-    close/1
+    close/1,
+    heartbeat/1
 ]).
 
 -include("response_codes.hrl").
@@ -34,7 +35,8 @@ all() ->
         metadata,
         delete_without_create,
         metadata_update,
-        close
+        close,
+        heartbeat
     ].
 
 host() ->
@@ -237,6 +239,14 @@ close(_Config) ->
     after 1000 ->
         exit(timeout)
     end.
+
+heartbeat(_Config) ->
+    {ok, Connection} = lake:connect(host(), port(), <<"guest">>, <<"guest">>, <<"/">>, [
+        {heartbeat, 2}
+    ]),
+    timer:sleep(4000),
+    ok = lake:stop(Connection),
+    ok.
 
 %% FIXME test: frame size with large messages
 %% FIXME test: after unsubscribe, no more messages are delivered

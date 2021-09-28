@@ -1,6 +1,6 @@
 -module(lake_connection).
 
--export([connect/5, stop/1]).
+-export([connect/6, stop/1]).
 -export([
     declare_publisher/4,
     publish_sync/3,
@@ -28,11 +28,13 @@
 
 -include("response_codes.hrl").
 
-connect(Host, Port, User, Password, Vhost) ->
-    case lake_raw_connection:connect(Host, Port, User, Password, Vhost) of
-        {ok, {Socket, _FrameMax, _Heartbeat}} ->
-            %% FIXME configure connection with FrameMax and Heartbeat
-            {ok, Connection} = gen_server:start_link(?MODULE, [_CorrelationId = 3], []),
+connect(Host, Port, User, Password, Vhost, Options) ->
+    case lake_raw_connection:connect(Host, Port, User, Password, Vhost, Options) of
+        {ok, {Socket, _FrameMax, NegotiatedHeartbeat}} ->
+            %% FIXME configure connection with FrameMax
+            {ok, Connection} = gen_server:start_link(
+                ?MODULE, [_CorrelationId = 3, NegotiatedHeartbeat], []
+            ),
             ok = gen_tcp:controlling_process(Socket, Connection),
             Connection ! {{socket, Socket}, self()},
             receive
@@ -181,17 +183,21 @@ stop(Connection) ->
     subscriptions = #{},
     subscriptions_by_stream = #{},
     publishers = #{},
-    publishers_by_stream = #{}
+    publishers_by_stream = #{},
+    heartbeat
 }).
 
-init([CorrelationId]) ->
-    {ok, wait_for_socket, {continue, CorrelationId}}.
+init([InitialCorrelationId, Heartbeat]) ->
+    {ok, wait_for_socket, {continue, {InitialCorrelationId, Heartbeat}}}.
 
-handle_continue(CorrelationId, wait_for_socket) ->
+handle_continue({CorrelationId, Heartbeat}, wait_for_socket) ->
     receive
         {{socket, Socket}, Sender} ->
             Sender ! received_socket,
-            {noreply, #state{correlation_id = CorrelationId, socket = Socket}}
+            {ok, HeartbeatProcess} = lake_heartbeat:start_link(Heartbeat, self()),
+            {noreply, #state{
+                correlation_id = CorrelationId, socket = Socket, heartbeat = HeartbeatProcess
+            }}
     after 5000 ->
         exit(timeout)
     end.
@@ -311,6 +317,11 @@ handle_call({debug, forward, Message}, _From, State) ->
 handle_call(Call, _From, State) ->
     {reply, {unknown, Call}, State}.
 
+handle_cast(heartbeat, State) ->
+    Socket = State#state.socket,
+    Heartbeat = lake_messages:heartbeat(),
+    ok = lake_utils:send_message(Socket, Heartbeat),
+    {noreply, State};
 handle_cast(_Cast, State) ->
     {noreply, State}.
 
@@ -436,6 +447,8 @@ forward_and_reply1({send, Pid}, Message) ->
     Pid ! Message;
 forward_and_reply1({reply, From}, Message) ->
     gen_server:reply(From, Message);
+forward_and_reply1({cast, Pid}, Message) ->
+    gen_server:cast(Pid, Message);
 forward_and_reply1(List, Message) when is_list(List) ->
     lists:foreach(fun(Recipient) -> forward_and_reply1(Recipient, Message) end, List).
 
@@ -471,7 +484,9 @@ recipient_from_message({close_response, Corr, _}, State) ->
     recipient_from_corr(Corr, State);
 recipient_from_message({close, _, _, _}, _) ->
     %% RabbitMQ sent us a message to close the connection; we need to handle this separately.
-    [].
+    [];
+recipient_from_message({heartbeat}, State) ->
+    {cast, State#state.heartbeat}.
 
 recipient_from_corr(Corr, State) ->
     #state{

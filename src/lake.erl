@@ -3,7 +3,7 @@
 %%
 -module(lake).
 
--export([tls_connect/4, tls_connect/5, connect/4, connect/5, stop/1]).
+-export([tls_connect/4, tls_connect/5, connect/4, connect/5, connect/6, stop/1]).
 
 -export([
     declare_publisher/4,
@@ -32,14 +32,23 @@ tls_connect(_Host, _Port, _User, _Password, _Vhost) ->
 
 %% @doc Establish a connection.
 %% @see connect/5
+%% @see connect/6
 connect(Host, User, Password, Vhost) ->
     connect(Host, 5552, User, Password, Vhost).
 
 %%
 %% @doc Establish a connection.
 %% @see connect/4
+%% @see connect/6
 connect(Host, Port, User, Password, Vhost) ->
-    lake_connection:connect(normalize_host(Host), Port, User, Password, Vhost).
+    lake_connection:connect(normalize_host(Host), Port, User, Password, Vhost, []).
+
+%%
+%% @doc Establish a connection.
+%% @see connect/4
+%% @see connect/5
+connect(Host, Port, User, Password, Vhost, Options) ->
+    lake_connection:connect(normalize_host(Host), Port, User, Password, Vhost, Options).
 
 normalize_host(Host) when is_binary(Host) ->
     binary_to_list(Host);
