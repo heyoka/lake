@@ -1,5 +1,5 @@
 {application, lake, [
-    {description, "Erlang RabbitMQ Streams Connector"},
+    {description, "Erlang RabbitMQ Streams Client"},
     {vsn, "0.1.0"},
     {registered, []},
     {applications, [

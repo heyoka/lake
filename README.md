@@ -1,6 +1,6 @@
 # lake
 
-An Erlang RabbitMQ Streams Connector.
+An Erlang RabbitMQ Streams client.
 
 ## Build
 
