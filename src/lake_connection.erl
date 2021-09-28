@@ -17,6 +17,7 @@
 ]).
 
 -behaviour(gen_server).
+
 -export([
     init/1,
     handle_call/3,
@@ -27,20 +28,22 @@
 ]).
 
 -include("response_codes.hrl").
+-include("lake_connection_state.hrl").
 
 connect(Host, Port, User, Password, Vhost, Options) ->
     case lake_raw_connection:connect(Host, Port, User, Password, Vhost, Options) of
         {ok, {Socket, _FrameMax, NegotiatedHeartbeat}} ->
             %% FIXME configure connection with FrameMax
             {ok, Connection} = gen_server:start_link(
-                ?MODULE, [_CorrelationId = 3, NegotiatedHeartbeat], []
+                ?MODULE,
+                [_CorrelationId = 3, NegotiatedHeartbeat],
+                []
             ),
             ok = gen_tcp:controlling_process(Socket, Connection),
             Connection ! {{socket, Socket}, self()},
             receive
                 received_socket -> ok
-            after 5000 ->
-                exit(timeout)
+            after 5000 -> exit(timeout)
             end,
             {ok, Connection};
         E = {error, _} ->
@@ -52,7 +55,8 @@ connect(Host, Port, User, Password, Vhost, Options) ->
 %% CorrId)
 declare_publisher(Connection, Stream, PublisherId, PublisherReference) ->
     Result = gen_server:call(
-        Connection, {declare_publisher, self(), Stream, PublisherId, PublisherReference}
+        Connection,
+        {declare_publisher, self(), Stream, PublisherId, PublisherReference}
     ),
     case Result of
         {declare_publisher_response, _, ?RESPONSE_OK} ->
@@ -158,7 +162,8 @@ unsubscribe(Connection, SubscriptionId) ->
 
 metadata(Connection, Streams) ->
     {metadata_response, _CorrelationId, Endpoints, Metadata} = gen_server:call(
-        Connection, {metadata, Streams}
+        Connection,
+        {metadata, Streams}
     ),
     {ok, Endpoints, Metadata}.
 
@@ -169,23 +174,6 @@ stop(Connection) ->
         {close_response, _Corr, ResponseCode} ->
             {error, lake_utils:response_code_to_atom(ResponseCode)}
     end.
-
-%%
-%% Connection
-%%
--record(state, {
-    correlation_id,
-    socket,
-    %% packets might be split over multiple tcp packets. This buffer holds incomplete packets.
-    rx_buf = <<>>,
-    %% FIXME clean-up if caller dies
-    pending_requests = #{},
-    subscriptions = #{},
-    subscriptions_by_stream = #{},
-    publishers = #{},
-    publishers_by_stream = #{},
-    heartbeat
-}).
 
 init([InitialCorrelationId, Heartbeat]) ->
     {ok, wait_for_socket, {continue, {InitialCorrelationId, Heartbeat}}}.
@@ -203,21 +191,30 @@ handle_continue({CorrelationId, Heartbeat}, wait_for_socket) ->
                         undefined
                 end,
             {noreply, #state{
-                correlation_id = CorrelationId, socket = Socket, heartbeat = HeartbeatProcess
+                correlation_id = CorrelationId,
+                socket = Socket,
+                heartbeat = HeartbeatProcess
             }}
-    after 5000 ->
-        exit(timeout)
+    after 5000 -> exit(timeout)
     end.
 
 handle_call({declare_publisher, Publisher, Stream, PublisherId, PublisherReference}, From, State0) ->
     Corr = State0#state.correlation_id,
     Socket = State0#state.socket,
     DeclarePublisher = lake_messages:declare_publisher(
-        Corr, Stream, PublisherId, PublisherReference
+        Corr,
+        Stream,
+        PublisherId,
+        PublisherReference
     ),
     ok = lake_utils:send_message(Socket, DeclarePublisher),
-    State1 = register_pending_request(State0, Corr, From, {Publisher, PublisherId, Stream}),
-    State2 = inc_correlation_id(State1),
+    State1 = lake_connection_state:register_pending_request(
+        Corr,
+        From,
+        {Publisher, PublisherId, Stream},
+        State0
+    ),
+    State2 = lake_connection_state:inc_correlation_id(State1),
     {noreply, State2};
 handle_call({publish_async, PublisherId, Messages}, From, State) ->
     Socket = State#state.socket,
@@ -229,19 +226,21 @@ handle_call({query_publisher_sequence, PublisherReference, Stream}, From, State0
     Corr = State0#state.correlation_id,
     Socket = State0#state.socket,
     QueryPublisherSequence = lake_messages:query_publisher_sequence(
-        Corr, PublisherReference, Stream
+        Corr,
+        PublisherReference,
+        Stream
     ),
     ok = lake_utils:send_message(Socket, QueryPublisherSequence),
-    State1 = register_pending_request(State0, Corr, From, []),
-    State2 = inc_correlation_id(State1),
+    State1 = lake_connection_state:register_pending_request(Corr, From, [], State0),
+    State2 = lake_connection_state:inc_correlation_id(State1),
     {noreply, State2};
 handle_call({delete_publisher, PublisherId}, From, State0) ->
     Corr = State0#state.correlation_id,
     Socket = State0#state.socket,
     DeletePublisher = lake_messages:delete_publisher(Corr, PublisherId),
     ok = lake_utils:send_message(Socket, DeletePublisher),
-    State1 = register_pending_request(State0, Corr, From, PublisherId),
-    State2 = inc_correlation_id(State1),
+    State1 = lake_connection_state:register_pending_request(Corr, From, PublisherId, State0),
+    State2 = lake_connection_state:inc_correlation_id(State1),
     {noreply, State2};
 handle_call({credit, SubscriptionId, Credit}, _From, State) ->
     Socket = State#state.socket,
@@ -257,16 +256,16 @@ handle_call({create, Stream, Arguments}, From, State0) ->
     Socket = State0#state.socket,
     Create = lake_messages:create(Corr, Stream, Arguments),
     ok = lake_utils:send_message(Socket, Create),
-    State1 = register_pending_request(State0, Corr, From, []),
-    State2 = inc_correlation_id(State1),
+    State1 = lake_connection_state:register_pending_request(Corr, From, [], State0),
+    State2 = lake_connection_state:inc_correlation_id(State1),
     {noreply, State2};
 handle_call({delete, Stream}, From, State0) ->
     Corr = State0#state.correlation_id,
     Socket = State0#state.socket,
     Delete = lake_messages:delete(Corr, Stream),
     ok = lake_utils:send_message(Socket, Delete),
-    State1 = register_pending_request(State0, Corr, From, []),
-    State2 = inc_correlation_id(State1),
+    State1 = lake_connection_state:register_pending_request(Corr, From, [], State0),
+    State2 = lake_connection_state:inc_correlation_id(State1),
     {noreply, State2};
 handle_call(
     {subscribe, Subscriber, Stream, SubscriptionId, OffsetDefinition, Credit, Properties},
@@ -276,11 +275,21 @@ handle_call(
     Corr = State0#state.correlation_id,
     Socket = State0#state.socket,
     Subscribe = lake_messages:subscribe(
-        Corr, Stream, SubscriptionId, OffsetDefinition, Credit, Properties
+        Corr,
+        Stream,
+        SubscriptionId,
+        OffsetDefinition,
+        Credit,
+        Properties
     ),
     ok = lake_utils:send_message(Socket, Subscribe),
-    State1 = register_pending_request(State0, Corr, From, {Subscriber, SubscriptionId, Stream}),
-    State2 = inc_correlation_id(State1),
+    State1 = lake_connection_state:register_pending_request(
+        Corr,
+        From,
+        {Subscriber, SubscriptionId, Stream},
+        State0
+    ),
+    State2 = lake_connection_state:inc_correlation_id(State1),
     {noreply, State2};
 handle_call({store_offset, PublisherReference, Stream, Offset}, _From, State) ->
     Socket = State#state.socket,
@@ -291,32 +300,32 @@ handle_call({query_offset, PublisherReference, Stream}, From, State0) ->
     Socket = State0#state.socket,
     QueryOffset = lake_messages:query_offset(Corr, PublisherReference, Stream),
     ok = lake_utils:send_message(Socket, QueryOffset),
-    State1 = register_pending_request(State0, Corr, From, []),
-    State2 = inc_correlation_id(State1),
+    State1 = lake_connection_state:register_pending_request(Corr, From, [], State0),
+    State2 = lake_connection_state:inc_correlation_id(State1),
     {noreply, State2};
 handle_call({unsubscribe, SubscriptionId}, From, State0) ->
     Corr = State0#state.correlation_id,
     Socket = State0#state.socket,
     Unsubscribe = lake_messages:unsubscribe(Corr, SubscriptionId),
     ok = lake_utils:send_message(Socket, Unsubscribe),
-    State1 = register_pending_request(State0, Corr, From, SubscriptionId),
-    State2 = inc_correlation_id(State1),
+    State1 = lake_connection_state:register_pending_request(Corr, From, SubscriptionId, State0),
+    State2 = lake_connection_state:inc_correlation_id(State1),
     {noreply, State2};
 handle_call({metadata, Streams}, From, State0) ->
     Corr = State0#state.correlation_id,
     Socket = State0#state.socket,
     Metadata = lake_messages:metadata(Corr, Streams),
     ok = lake_utils:send_message(Socket, Metadata),
-    State1 = register_pending_request(State0, Corr, From, []),
-    State2 = inc_correlation_id(State1),
+    State1 = lake_connection_state:register_pending_request(Corr, From, [], State0),
+    State2 = lake_connection_state:inc_correlation_id(State1),
     {noreply, State2};
 handle_call({close, ResponseCode, Reason}, From, State0) ->
     Corr = State0#state.correlation_id,
     Socket = State0#state.socket,
     Close = lake_messages:close(Corr, ResponseCode, Reason),
     ok = lake_utils:send_message(Socket, Close),
-    State1 = register_pending_request(State0, Corr, From, []),
-    State2 = inc_correlation_id(State1),
+    State1 = lake_connection_state:register_pending_request(Corr, From, [], State0),
+    State2 = lake_connection_state:inc_correlation_id(State1),
     {noreply, State2};
 handle_call({debug, forward, Message}, _From, State) ->
     %% This call is meant for testing.
@@ -372,77 +381,22 @@ add_new_subscriptions(Messages, State) ->
 
 add_new_subscriptions1({subscribe_response, Corr, ?RESPONSE_OK}, State0) ->
     #state{pending_requests = #{Corr := {_From, {Subscriber, SubscriptionId, Stream}}}} = State0,
-    add_subscription(State0, SubscriptionId, Subscriber, Stream);
+    lake_connection_state:add_subscription(SubscriptionId, Subscriber, Stream, State0);
 add_new_subscriptions1({subscribe_response, _Corr, _ResponseCode}, State) ->
     State;
 add_new_subscriptions1(_Other, State) ->
     State.
-
-add_subscription(State, SubscriptionId, Subscriber, Stream) ->
-    Subscriptions = State#state.subscriptions,
-    State#state{
-        subscriptions = Subscriptions#{SubscriptionId => {Subscriber, Stream}},
-        subscriptions_by_stream =
-            add_to_subscriptions_by_stream(
-                State#state.subscriptions_by_stream, Stream, SubscriptionId
-            )
-    }.
-
-remove_subscription(SubscriptionId, State) ->
-    #state{
-        subscriptions = Subscriptions,
-        subscriptions_by_stream = SubscriptionsByStream
-    } = State,
-    #{
-        SubscriptionId := {_Subscriber, Stream}
-    } = Subscriptions,
-    State#state{
-        subscriptions = maps:remove(SubscriptionId, Subscriptions),
-        subscriptions_by_stream = remove_subscription_by_stream(
-            SubscriptionsByStream, Stream, SubscriptionId
-        )
-    }.
-
-remove_subscription_by_stream(SubscriptionsByStream, Stream, SubscriptionId) ->
-    #{Stream := Subscriptions0} = SubscriptionsByStream,
-    Subscriptions1 = sets:del_element(SubscriptionId, Subscriptions0),
-    case sets:is_empty(Subscriptions1) of
-        true ->
-            maps:remove(Stream, SubscriptionsByStream);
-        false ->
-            SubscriptionsByStream#{Stream := Subscriptions1}
-    end.
-
-add_to_subscriptions_by_stream(SubscriptionsByStream, Stream, SubscriptionId) ->
-    SubscriptionIds = maps:get(Stream, SubscriptionsByStream, sets:new([{version, 2}])),
-    SubscriptionsByStream#{Stream => sets:add_element(SubscriptionId, SubscriptionIds)}.
 
 add_new_publishers(Messages, State) ->
     lists:foldl(fun add_new_publishers1/2, State, Messages).
 
 add_new_publishers1({declare_publisher_response, Corr, ?RESPONSE_OK}, State0) ->
     #state{pending_requests = #{Corr := {_From, {Publisher, PublisherId, Stream}}}} = State0,
-    add_publisher(State0, PublisherId, Publisher, Stream);
+    lake_connection_state:add_publisher(PublisherId, Publisher, Stream, State0);
 add_new_publishers1({declare_publisher_response, _Corr, _}, State) ->
     State;
 add_new_publishers1(_Other, State) ->
     State.
-
-add_publisher(State, PublisherId, Publisher, Stream) ->
-    Publishers = State#state.publishers,
-    State#state{
-        publishers = Publishers#{PublisherId => Publisher},
-        publishers_by_stream = add_to_publishers_by_stream(
-            State#state.publishers_by_stream, Stream, PublisherId
-        )
-    }.
-
-add_to_publishers_by_stream(PublishersByStream, Stream, PublisherId) ->
-    Set = maps:get(Stream, PublishersByStream, sets:new([{version, 2}])),
-    PublishersByStream#{Stream => sets:add_element(PublisherId, Set)}.
-
-remove_publisher(PublisherId, State) ->
-    State#state{publishers = maps:remove(PublisherId, State#state.publishers)}.
 
 forward_and_reply(Messages, State) ->
     lists:foreach(
@@ -501,59 +455,35 @@ recipient_from_message({heartbeat}, State) ->
     end.
 
 recipient_from_corr(Corr, State) ->
-    #state{
-        pending_requests = #{Corr := {From, _Extra}}
-    } = State,
+    From = lake_connection_state:requestor_from_correlation_id(Corr, State),
     {reply, From}.
 
 recipient_from_publishers(PublisherId, State) ->
-    #state{
-        publishers = #{PublisherId := Publisher}
-    } = State,
+    Publisher = lake_connection_state:publisher_from_publisher_id(PublisherId, State),
     {send, Publisher}.
 
 recipient_from_subscriptions(SubscriptionId, State) ->
-    #state{
-        subscriptions = #{SubscriptionId := {Subscriber, _Stream}}
-    } = State,
+    Subscriber = lake_connection_state:subscriber_from_subscription_id(SubscriptionId, State),
     {send, Subscriber}.
 
 recipients_from_stream(Stream, State) ->
-    #state{
-        subscriptions_by_stream = #{Stream := SubscriptionIds},
-        publishers_by_stream = #{Stream := PublisherIds}
-    } = State,
-    Subscribers =
-        [
-            begin
-                {Subscriber, _Stream} = maps:get(SubscriptionId, State#state.subscriptions),
-                {send, Subscriber}
-            end
-         || SubscriptionId <- sets:to_list(SubscriptionIds)
-        ],
-    Publishers =
-        [
-            begin
-                {Publisher, _Stream} = maps:get(PublisherId, State#state.subscriptions),
-                {send, Publisher}
-            end
-         || PublisherId <- sets:to_list(PublisherIds)
-        ],
-    Subscribers ++ Publishers.
+    Subscribers = lake_connection_state:stream_subscriptions(Stream, State),
+    Publishers = lake_connection_state:stream_publishers(Stream, State),
+    [{send, Pid} || Pid <- Subscribers ++ Publishers].
 
 clean_publishers(Messages, State) ->
     lists:foldl(fun clean_publishers1/2, State, Messages).
 
 clean_publishers1({delete_publisher_response, Corr, ?RESPONSE_OK}, State0) ->
     #state{pending_requests = #{Corr := {_From, PublisherId}}} = State0,
-    remove_publisher(PublisherId, State0);
+    lake_connection_state:remove_publisher(PublisherId, State0);
 clean_publishers1({delete_publisher_response, _Corr, _}, State) ->
     State;
 clean_publishers1({metadata_update, ?RESPONSE_OK, _Stream}, _State) ->
     exit("MetadataUpdate with ?RESPONSE_OK not handled");
 clean_publishers1({metadata_update, _, Stream}, State) ->
-    PublisherIds = publisher_ids_from_stream(State, Stream),
-    lists:foldl(fun remove_publisher/2, State, PublisherIds);
+    PublisherIds = lake_connection_state:publisher_ids_from_stream(Stream, State),
+    lists:foldl(fun lake_connection_state:remove_publisher/2, State, PublisherIds);
 clean_publishers1(_Other, State) ->
     State.
 
@@ -562,57 +492,24 @@ clean_subscriptions(Messages, State) ->
 
 clean_subscriptions1({unsubscribe_response, Corr, ?RESPONSE_OK}, State0) ->
     #state{pending_requests = #{Corr := {_From, SubscriptionId}}} = State0,
-    remove_subscription(SubscriptionId, State0);
+    lake_connection_state:remove_subscription(SubscriptionId, State0);
 clean_subscriptions1({unsubscribe_response, _Corr, _}, _State) ->
     exit("UnsubscribeResponse without ?RESPONSE_OK not handled");
 clean_subscriptions1({metadata_update, ?RESPONSE_OK, _Stream}, _State) ->
     exit("MetadataUpdate with ?RESPONSE_OK not handled");
 clean_subscriptions1({metadata_update, _, Stream}, State) ->
-    SubscriptionIds = subscription_ids_from_stream(State, Stream),
-    lists:foldl(fun remove_subscription/2, State, SubscriptionIds);
+    SubscriptionIds = lake_connection_state:subscription_ids_from_stream(Stream, State),
+    lists:foldl(fun lake_connection_state:remove_subscription/2, State, SubscriptionIds);
 clean_subscriptions1(_Other, State) ->
     State.
 
 clean_pending_requests(Messages, State) ->
     lists:foldl(fun clean_pending_requests1/2, State, Messages).
 
-clean_pending_requests1(Message, State0) ->
+clean_pending_requests1(Message, State) ->
     case lake_messages:message_to_correlation_id(Message) of
         {ok, Corr} ->
-            #state{
-                pending_requests = #{Corr := {From, _Extra}}
-            } = State0,
-            PendingRequests = maps:remove(From, maps:remove(Corr, State0#state.pending_requests)),
-            State0#state{
-                pending_requests = PendingRequests
-            };
+            lake_connection_state:remove_pending_request(Corr, State);
         {error, _} ->
-            State0
-    end.
-
-register_pending_request(State, Corr, From, Extra) ->
-    BlockedCallers0 = State#state.pending_requests,
-    BlockedCallers = BlockedCallers0#{Corr => {From, Extra}, From => Corr},
-    State#state{
-        pending_requests = BlockedCallers
-    }.
-
-inc_correlation_id(State) ->
-    Corr = State#state.correlation_id,
-    State#state{correlation_id = Corr + 1}.
-
-subscription_ids_from_stream(State, Stream) ->
-    case State#state.subscriptions_by_stream of
-        #{Stream := Subscriptions} ->
-            sets:to_list(Subscriptions);
-        _ ->
-            []
-    end.
-
-publisher_ids_from_stream(State, Stream) ->
-    case State#state.publishers_by_stream of
-        #{Stream := Publishers} ->
-            sets:to_list(Publishers);
-        _ ->
-            []
+            State
     end.

@@ -92,6 +92,5 @@ wait_for_message(Socket) ->
             {Parsed, Rest};
         {tcp, Socket, Other} ->
             {error, {malformed, Other}}
-    after 5000 ->
-        {error, timeout}
+    after 5000 -> {error, timeout}
     end.

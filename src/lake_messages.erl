@@ -158,6 +158,7 @@ parse(Unknown) ->
 -define(OSIRIS_MAGIC, 5).
 -define(OSIRIS_VERSION, 0).
 -define(OSIRIS_CHUNK_TYPE_USER, 0).
+
 chunk_to_messages(
     <<?OSIRIS_MAGIC:4, ?OSIRIS_VERSION:4, ?OSIRIS_CHUNK_TYPE_USER:8, NumberOfEntries:16,
         NumberOfRecords:32, Timestamp:64, Epoch:64, ChunkId:64, DataCRC:32, DataLength:32,
@@ -442,7 +443,8 @@ parse_map(Bin) when is_binary(Bin) ->
 parse_map(<<>>, Acc) ->
     Acc;
 parse_map(
-    <<KeySize:16, Key:KeySize/binary, ValueSize:16, Value:ValueSize/binary, Rest/binary>>, Acc
+    <<KeySize:16, Key:KeySize/binary, ValueSize:16, Value:ValueSize/binary, Rest/binary>>,
+    Acc
 ) ->
     parse_map(Rest, Acc#{Key => Value}).
 
@@ -484,7 +486,9 @@ parse_endpoints(NumEndpoints, Bin) ->
 parse_endpoints(0, Rest, Endpoints) ->
     {Endpoints, Rest};
 parse_endpoints(
-    Cnt, <<Index:16, HostLength:16, Host:HostLength/binary, Port:32, Rest/binary>>, Acc
+    Cnt,
+    <<Index:16, HostLength:16, Host:HostLength/binary, Port:32, Rest/binary>>,
+    Acc
 ) ->
     EndpointMetadata = #{
         index => Index,
