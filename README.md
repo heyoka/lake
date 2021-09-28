@@ -27,14 +27,14 @@ An Erlang RabbitMQ Streams Connector.
 * [x] Create
 * [x] Delete
 * [x] Metadata
-* [ ] MetadataUpdate
+* [x] MetadataUpdate
 * [x] PeerProperties
 * [x] SaslHandshake
 * [x] SaslAuthenticate
 * [x] Tune
 * [x] Open
-* [ ] Close
-* [ ] Heartbeat
+* [x] Close
+* [x] Heartbeat
 * [ ] Route (experimental)
 * [ ] Partitions (experimental)
 
