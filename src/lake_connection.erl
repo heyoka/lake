@@ -29,11 +29,20 @@
 -include("response_codes.hrl").
 
 connect(Host, Port, User, Password, Vhost) ->
-    try
-        connect1(Host, Port, User, Password, Vhost)
-    catch
-        throw:Reason ->
-            {error, Reason}
+    case lake_raw_connection:connect(Host, Port, User, Password, Vhost) of
+        {ok, {Socket, _FrameMax, _Heartbeat}} ->
+            %% FIXME configure connection with FrameMax and Heartbeat
+            {ok, Connection} = gen_server:start_link(?MODULE, [_CorrelationId = 3], []),
+            ok = gen_tcp:controlling_process(Socket, Connection),
+            Connection ! {{socket, Socket}, self()},
+            receive
+                received_socket -> ok
+            after 5000 ->
+                exit(timeout)
+            end,
+            {ok, Connection};
+        E = {error, _} ->
+            E
     end.
 
 %% FIXME creating the message binaries should be done in the caller if possible
@@ -151,79 +160,6 @@ metadata(Connection, Streams) ->
     ),
     {ok, Endpoints, Metadata}.
 
-connect1(Host, Port, User, Password, Vhost) when
-    is_binary(User), is_binary(Password), is_binary(Vhost)
-->
-    {ok, Socket} = gen_tcp:connect(Host, Port, [binary, {active, once}]),
-
-    peer_properties(Socket),
-    sasl_handshake(Socket),
-    %% TODO Allow using mechanisms other than <<"PLAIN">> ?
-    MaybeTune = sasl_authenticate(Socket, <<"PLAIN">>, User, Password),
-    %% FIXME configure connection with FrameMax and Heartbeat
-    {_FrameMax, _Heartbeat} = tune(Socket, MaybeTune),
-    open(Socket, Vhost),
-
-    {ok, Connection} = gen_server:start_link(?MODULE, [_CorrelationId = 3], []),
-    ok = gen_tcp:controlling_process(Socket, Connection),
-    Connection ! {{socket, Socket}, self()},
-    receive
-        received_socket -> ok
-    after 5000 ->
-        exit(timeout)
-    end,
-
-    {ok, Connection}.
-
-peer_properties(Socket) ->
-    PeerProperties = [{<<"platform">>, <<"Erlang">>}],
-    send_message(Socket, lake_messages:peer_properties(0, PeerProperties)),
-    case wait_for_message(Socket) of
-        {{ok, {peer_properties_response, 0, ?RESPONSE_OK, _}}, <<>>} ->
-            ok;
-        {{ok, {peer_properties_response, 0, ResponseCode, _}}, <<>>} ->
-            throw({peer_properties_failed, lake_utils:response_code_to_atom(ResponseCode)})
-    end.
-
-sasl_handshake(Socket) ->
-    send_message(Socket, lake_messages:sasl_handshake(1)),
-    case wait_for_message(Socket) of
-        {{ok, {sasl_handshake_response, 1, ?RESPONSE_OK, Mechanisms}}, <<>>} ->
-            Mechanisms;
-        {{ok, {sasl_handshake_response, 1, ResponseCode, _Mechanisms}}, <<>>} ->
-            throw({sasl_handshake_failed, lake_utils:response_code_to_atom(ResponseCode)})
-    end.
-
-sasl_authenticate(Socket, Mechanism, User, Password) ->
-    send_message(Socket, lake_messages:sasl_authenticate(2, Mechanism, User, Password)),
-    case wait_for_message(Socket) of
-        {{ok, {sasl_authenticate_response, 2, ?RESPONSE_OK, _SaslOpaque}}, Rest} ->
-            Rest;
-        {{ok, {sasl_authenticate_response, 2, ResponseCode, _SaslOpaque}}, _Rest} ->
-            throw({authentication_failed, lake_utils:response_code_to_atom(ResponseCode)})
-    end.
-
-tune(Socket, MaybeTune) ->
-    {{ok, {tune, FrameMax, Heartbeat}}, <<>>} =
-        case MaybeTune of
-            <<>> ->
-                wait_for_message(Socket);
-            <<Size:32, Tune:Size/binary>> ->
-                {lake_messages:parse(Tune), <<>>}
-        end,
-    send_message(Socket, lake_messages:tune(FrameMax, Heartbeat)),
-    {FrameMax, Heartbeat}.
-
-open(Socket, Vhost) ->
-    send_message(Socket, lake_messages:open(3, Vhost)),
-    case wait_for_message(Socket) of
-        %% FIXME make use of advertised host and port?
-        {{ok, {open_response, 3, ?RESPONSE_OK, _ConnectionProperties}}, <<>>} ->
-            ok;
-        {{ok, {open_response, 3, ResponseCode}}, <<>>} ->
-            throw({open_failed, lake_utils:response_code_to_atom(ResponseCode)})
-    end.
-
 stop(Connection) ->
     %% FIXME this should be a graceful CLOSE..
     gen_server:stop(Connection).
@@ -264,7 +200,7 @@ handle_call({declare_publisher, Publisher, Stream, PublisherId, PublisherReferen
     DeclarePublisher = lake_messages:declare_publisher(
         Corr, Stream, PublisherId, PublisherReference
     ),
-    ok = send_message(Socket, DeclarePublisher),
+    ok = lake_utils:send_message(Socket, DeclarePublisher),
     State1 = register_pending_request(State0, Corr, From, {Publisher, PublisherId, Stream}),
     State2 = inc_correlation_id(State1),
     {noreply, State2};
@@ -272,7 +208,7 @@ handle_call({publish_async, PublisherId, Messages}, From, State) ->
     Socket = State#state.socket,
     Publish = lake_messages:publish(PublisherId, Messages),
     gen_server:reply(From, ok),
-    ok = send_message(Socket, Publish),
+    ok = lake_utils:send_message(Socket, Publish),
     {noreply, State};
 handle_call({query_publisher_sequence, PublisherReference, Stream}, From, State0) ->
     Corr = State0#state.correlation_id,
@@ -280,7 +216,7 @@ handle_call({query_publisher_sequence, PublisherReference, Stream}, From, State0
     QueryPublisherSequence = lake_messages:query_publisher_sequence(
         Corr, PublisherReference, Stream
     ),
-    ok = send_message(Socket, QueryPublisherSequence),
+    ok = lake_utils:send_message(Socket, QueryPublisherSequence),
     State1 = register_pending_request(State0, Corr, From, []),
     State2 = inc_correlation_id(State1),
     {noreply, State2};
@@ -288,7 +224,7 @@ handle_call({delete_publisher, PublisherId}, From, State0) ->
     Corr = State0#state.correlation_id,
     Socket = State0#state.socket,
     DeletePublisher = lake_messages:delete_publisher(Corr, PublisherId),
-    ok = send_message(Socket, DeletePublisher),
+    ok = lake_utils:send_message(Socket, DeletePublisher),
     State1 = register_pending_request(State0, Corr, From, PublisherId),
     State2 = inc_correlation_id(State1),
     {noreply, State2};
@@ -297,7 +233,7 @@ handle_call({credit, SubscriptionId, Credit}, _From, State) ->
     case State#state.subscriptions of
         #{SubscriptionId := _} ->
             CreditMessage = lake_messages:credit(SubscriptionId, Credit),
-            {reply, send_message(Socket, CreditMessage), State};
+            {reply, lake_utils:send_message(Socket, CreditMessage), State};
         _ ->
             {reply, {error, unknown_subscription}, State}
     end;
@@ -305,7 +241,7 @@ handle_call({create, Stream, Arguments}, From, State0) ->
     Corr = State0#state.correlation_id,
     Socket = State0#state.socket,
     Create = lake_messages:create(Corr, Stream, Arguments),
-    ok = send_message(Socket, Create),
+    ok = lake_utils:send_message(Socket, Create),
     State1 = register_pending_request(State0, Corr, From, []),
     State2 = inc_correlation_id(State1),
     {noreply, State2};
@@ -313,7 +249,7 @@ handle_call({delete, Stream}, From, State0) ->
     Corr = State0#state.correlation_id,
     Socket = State0#state.socket,
     Delete = lake_messages:delete(Corr, Stream),
-    ok = send_message(Socket, Delete),
+    ok = lake_utils:send_message(Socket, Delete),
     State1 = register_pending_request(State0, Corr, From, []),
     State2 = inc_correlation_id(State1),
     {noreply, State2};
@@ -327,19 +263,19 @@ handle_call(
     Subscribe = lake_messages:subscribe(
         Corr, Stream, SubscriptionId, OffsetDefinition, Credit, Properties
     ),
-    ok = send_message(Socket, Subscribe),
+    ok = lake_utils:send_message(Socket, Subscribe),
     State1 = register_pending_request(State0, Corr, From, {Subscriber, SubscriptionId, Stream}),
     State2 = inc_correlation_id(State1),
     {noreply, State2};
 handle_call({store_offset, PublisherReference, Stream, Offset}, _From, State) ->
     Socket = State#state.socket,
     StoreOffset = lake_messages:store_offset(PublisherReference, Stream, Offset),
-    {reply, send_message(Socket, StoreOffset), State};
+    {reply, lake_utils:send_message(Socket, StoreOffset), State};
 handle_call({query_offset, PublisherReference, Stream}, From, State0) ->
     Corr = State0#state.correlation_id,
     Socket = State0#state.socket,
     QueryOffset = lake_messages:query_offset(Corr, PublisherReference, Stream),
-    ok = send_message(Socket, QueryOffset),
+    ok = lake_utils:send_message(Socket, QueryOffset),
     State1 = register_pending_request(State0, Corr, From, []),
     State2 = inc_correlation_id(State1),
     {noreply, State2};
@@ -347,7 +283,7 @@ handle_call({unsubscribe, SubscriptionId}, From, State0) ->
     Corr = State0#state.correlation_id,
     Socket = State0#state.socket,
     Unsubscribe = lake_messages:unsubscribe(Corr, SubscriptionId),
-    ok = send_message(Socket, Unsubscribe),
+    ok = lake_utils:send_message(Socket, Unsubscribe),
     State1 = register_pending_request(State0, Corr, From, SubscriptionId),
     State2 = inc_correlation_id(State1),
     {noreply, State2};
@@ -355,7 +291,7 @@ handle_call({metadata, Streams}, From, State0) ->
     Corr = State0#state.correlation_id,
     Socket = State0#state.socket,
     Metadata = lake_messages:metadata(Corr, Streams),
-    ok = send_message(Socket, Metadata),
+    ok = lake_utils:send_message(Socket, Metadata),
     State1 = register_pending_request(State0, Corr, From, []),
     State2 = inc_correlation_id(State1),
     {noreply, State2};
@@ -599,26 +535,6 @@ clean_pending_requests1(Message, State0) ->
             };
         {error, _} ->
             State0
-    end.
-
-frame(Message) when is_binary(Message) ->
-    Size = byte_size(Message),
-    <<Size:32, Message/binary>>.
-
-send_message(Socket, Message) ->
-    gen_tcp:send(Socket, frame(Message)).
-
-wait_for_message(Socket) ->
-    receive
-        {tcp, Socket, <<Size:32, Message:Size/binary, Rest/binary>>} ->
-            inet:setopts(Socket, [{active, once}]),
-
-            Parsed = lake_messages:parse(Message),
-            {Parsed, Rest};
-        {tcp, Socket, Other} ->
-            {error, {malformed, Other}}
-    after 5000 ->
-        {error, timeout}
     end.
 
 register_pending_request(State, Corr, From, Extra) ->

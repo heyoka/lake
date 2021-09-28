@@ -1,6 +1,6 @@
 -module(lake_utils).
 
--export([response_code_to_atom/1]).
+-export([response_code_to_atom/1, send_message/2]).
 
 -include("response_codes.hrl").
 
@@ -40,3 +40,10 @@ response_code_to_atom(?RESPONSE_PRECONDITION_FAILED) ->
     precondition_failed;
 response_code_to_atom(?RESPONSE_PUBLISHER_DOES_NOT_EXIST) ->
     publisher_does_not_exist.
+
+frame(Message) when is_binary(Message) ->
+    Size = byte_size(Message),
+    <<Size:32, Message/binary>>.
+
+send_message(Socket, Message) ->
+    gen_tcp:send(Socket, frame(Message)).
