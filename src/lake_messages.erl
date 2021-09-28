@@ -7,6 +7,8 @@
     sasl_handshake/1,
     sasl_authenticate/4,
     open/2,
+    close/3,
+    close_response/2,
     tune/2,
     declare_publisher/4,
     publish/2,
@@ -51,6 +53,7 @@
 -define(SASL_AUTHENTICATE, 19).
 -define(TUNE, 20).
 -define(OPEN, 21).
+-define(CLOSE, 22).
 
 parse(
     <<?RESPONSE:1, ?DECLARE_PUBLISHER:15, ?VERSION:16, Corr:32, ResponseCode:16>>
@@ -130,6 +133,15 @@ parse(
         ConnectionProperties/binary>>
 ) ->
     {ok, {open_response, Corr, ?RESPONSE_OK, parse_map(ConnectionProperties)}};
+parse(
+    <<?RESPONSE:1, ?CLOSE:15, ?VERSION:16, Corr:32, ResponseCode:16>>
+) ->
+    {close_response, Corr, ResponseCode};
+parse(
+    <<?REQUEST:1, ?CLOSE:15, ?VERSION:16, Corr:32, ResponseCode:16, ReasonSize:16,
+        Reason:ReasonSize/binary>>
+) ->
+    {close, Corr, ResponseCode, Reason};
 parse(
     <<?RESPONSE:1, ?OPEN:15, ?VERSION:16, Corr:32, ResponseCode:16>>
 ) ->
@@ -221,6 +233,27 @@ open(CorrelationId, Vhost) ->
         CorrelationId:32,
         VhostSize:16,
         Vhost:VhostSize/binary
+    >>.
+
+close(CorrelationId, ResponseCode, Reason) ->
+    ReasonSize = byte_size(Reason),
+    <<
+        ?REQUEST:1,
+        ?CLOSE:15,
+        ?VERSION:16,
+        CorrelationId:32,
+        ResponseCode:16,
+        ReasonSize:16,
+        Reason/binary
+    >>.
+
+close_response(CorrelationId, ResponseCode) ->
+    <<
+        ?RESPONSE:1,
+        ?CLOSE:15,
+        ?VERSION:16,
+        CorrelationId:32,
+        ResponseCode:16
     >>.
 
 declare_publisher(CorrelationId, Stream, PublisherId, PublisherReference) ->

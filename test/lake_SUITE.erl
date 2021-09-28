@@ -14,7 +14,8 @@
     store_and_query_offset/1,
     metadata/1,
     delete_without_create/1,
-    metadata_update/1
+    metadata_update/1,
+    close/1
 ]).
 
 -include("response_codes.hrl").
@@ -32,7 +33,8 @@ all() ->
         store_and_query_offset,
         metadata,
         delete_without_create,
-        metadata_update
+        metadata_update,
+        close
     ].
 
 host() ->
@@ -219,6 +221,25 @@ metadata_update(_Config) ->
     ok = lake:stop(Connection),
     ok.
 
+close(_Config) ->
+    %% Client initiates stop.
+    {ok, Connection1} = lake:connect(host(), port(), <<"guest">>, <<"guest">>, <<"/">>),
+    ok = lake:stop(Connection1),
+    %% Server initiates stop due to malformed frame.
+    {ok, Connection2} = lake:connect(host(), port(), <<"guest">>, <<"guest">>, <<"/">>),
+    Message = <<"invalid">>,
+    Size = byte_size(Message),
+    Framed = <<Size:32, Message:Size/binary>>,
+    unlink(Connection2),
+    Ref = monitor(process, Connection2),
+    ok = gen_server:call(Connection2, {debug, forward, Framed}),
+    receive
+        {'DOWN', Ref, _, _, _} ->
+            ok
+    after 1000 ->
+        exit(timeout)
+    end.
+
 %% FIXME test: frame size with large messages
 %% FIXME test: after unsubscribe, no more messages are delivered
 %% FIXME test: PublishError vs PublishConfirm; do we need to translate error codes?
@@ -227,4 +248,3 @@ metadata_update(_Config) ->
 %% FIXME test: QueryPublisherSequence, Credit, StoreOffset,QueryOffset, ...
 %% FIXME test: delete publisher if publisher was not declared
 %% FIXME test: unsubscribe without prior subscription
-%% FIXME test: Connection stops if it sent an invalid command (Server sends CLOSE in that case)

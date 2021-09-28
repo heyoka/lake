@@ -161,8 +161,12 @@ metadata(Connection, Streams) ->
     {ok, Endpoints, Metadata}.
 
 stop(Connection) ->
-    %% FIXME this should be a graceful CLOSE..
-    gen_server:stop(Connection).
+    case gen_server:call(Connection, {close, ?RESPONSE_OK, <<"stop">>}) of
+        {close_response, _Corr, ?RESPONSE_OK} ->
+            ok;
+        {close_response, _Corr, ResponseCode} ->
+            {error, lake_utils:response_code_to_atom(ResponseCode)}
+    end.
 
 %%
 %% Connection
@@ -181,8 +185,6 @@ stop(Connection) ->
 }).
 
 init([CorrelationId]) ->
-    %% FIXME Do not use trap_exit - the port will be closed anyways if the process dies
-    process_flag(trap_exit, true),
     {ok, wait_for_socket, {continue, CorrelationId}}.
 
 handle_continue(CorrelationId, wait_for_socket) ->
@@ -295,6 +297,17 @@ handle_call({metadata, Streams}, From, State0) ->
     State1 = register_pending_request(State0, Corr, From, []),
     State2 = inc_correlation_id(State1),
     {noreply, State2};
+handle_call({close, ResponseCode, Reason}, From, State0) ->
+    Corr = State0#state.correlation_id,
+    Socket = State0#state.socket,
+    Close = lake_messages:close(Corr, ResponseCode, Reason),
+    ok = lake_utils:send_message(Socket, Close),
+    State1 = register_pending_request(State0, Corr, From, []),
+    State2 = inc_correlation_id(State1),
+    {noreply, State2};
+handle_call({debug, forward, Message}, _From, State) ->
+    %% This call is meant for testing.
+    {reply, gen_tcp:send(State#state.socket, Message), State};
 handle_call(Call, _From, State) ->
     {reply, {unknown, Call}, State}.
 
@@ -312,12 +325,20 @@ handle_info({tcp, Socket, Packet}, State0 = #state{socket = Socket, rx_buf = Buf
     State3 = clean_publishers(Messages, State2),
     State4 = clean_subscriptions(Messages, State3),
     State5 = clean_pending_requests(Messages, State4),
-    {noreply, State5#state{rx_buf = BufRest}}.
+    State6 = State5#state{rx_buf = BufRest},
+    %% Check if the remote told us to close the connection
+    case lists:keyfind(close, 1, Messages) of
+        {close, Corr, _ResponseCode, Reason} ->
+            CloseResponse = lake_messages:close_response(Corr, ?RESPONSE_OK),
+            ok = lake_utils:send_message(Socket, CloseResponse),
+            {stop, {close, Reason}, State6};
+        false ->
+            {noreply, State6}
+    end;
+handle_info({tcp_closed, Port}, State = #state{socket = Port}) ->
+    {stop, normal, State}.
 
-%% FIXME handle_info({tcp_closed, Port}, State)
-
-terminate(Reason, State) ->
-    gen_tcp:close(State#state.socket),
+terminate(Reason, _State) ->
     Reason.
 
 split_into_messages(Buffer) ->
@@ -445,7 +466,12 @@ recipient_from_message({delete_response, Corr, _}, State) ->
 recipient_from_message({metadata_response, Corr, _, _}, State) ->
     recipient_from_corr(Corr, State);
 recipient_from_message({metadata_update, _, Stream}, State) ->
-    recipients_from_stream(Stream, State).
+    recipients_from_stream(Stream, State);
+recipient_from_message({close_response, Corr, _}, State) ->
+    recipient_from_corr(Corr, State);
+recipient_from_message({close, _, _, _}, _) ->
+    %% RabbitMQ sent us a message to close the connection; we need to handle this separately.
+    [].
 
 recipient_from_corr(Corr, State) ->
     #state{
