@@ -236,12 +236,8 @@ stop(Connection) ->
     socket,
     %% packets might be split over multiple tcp packets. This buffer holds incomplete packets.
     rx_buf = <<>>,
-    %% Pending requests and requestors:
-    %% * Maps from correlation ids to blocked callers + extra data, and maps from blocked
-    %%   callers to correlation ids to allow cleaning-up if the caller dies
-    %% * Maps from PublisherId to publisher and vice versa for sync publishing
     %% FIXME clean-up if caller dies
-    pending = #{},
+    pending_requests = #{},
     subscriptions = #{},
     publishers = #{}
 }).
@@ -267,7 +263,7 @@ handle_call({declare_publisher, Publisher, Stream, PublisherId, PublisherReferen
         Corr, Stream, PublisherId, PublisherReference
     ),
     ok = send_message(Socket, DeclarePublisher),
-    State1 = register_pending(State0, Corr, From, {Publisher, PublisherId}),
+    State1 = register_pending_request(State0, Corr, From, {Publisher, PublisherId}),
     State2 = inc_correlation_id(State1),
     {noreply, State2};
 handle_call({publish_async, PublisherId, Messages}, From, State) ->
@@ -283,7 +279,7 @@ handle_call({query_publisher_sequence, PublisherReference, Stream}, From, State0
         Corr, PublisherReference, Stream
     ),
     ok = send_message(Socket, QueryPublisherSequence),
-    State1 = register_pending(State0, Corr, From, []),
+    State1 = register_pending_request(State0, Corr, From, []),
     State2 = inc_correlation_id(State1),
     {noreply, State2};
 handle_call({delete_publisher, PublisherId}, From, State0) ->
@@ -291,7 +287,7 @@ handle_call({delete_publisher, PublisherId}, From, State0) ->
     Socket = State0#state.socket,
     DeletePublisher = lake_messages:delete_publisher(Corr, PublisherId),
     ok = send_message(Socket, DeletePublisher),
-    State1 = register_pending(State0, Corr, From, []),
+    State1 = register_pending_request(State0, Corr, From, []),
     State2 = inc_correlation_id(State1),
     {noreply, State2};
 handle_call({credit, SubscriptionId, Credit}, _From, State) ->
@@ -308,7 +304,7 @@ handle_call({create, Stream, Arguments}, From, State0) ->
     Socket = State0#state.socket,
     Create = lake_messages:create(Corr, Stream, Arguments),
     ok = send_message(Socket, Create),
-    State1 = register_pending(State0, Corr, From, []),
+    State1 = register_pending_request(State0, Corr, From, []),
     State2 = inc_correlation_id(State1),
     {noreply, State2};
 handle_call({delete, Stream}, From, State0) ->
@@ -316,7 +312,7 @@ handle_call({delete, Stream}, From, State0) ->
     Socket = State0#state.socket,
     Delete = lake_messages:delete(Corr, Stream),
     ok = send_message(Socket, Delete),
-    State1 = register_pending(State0, Corr, From, []),
+    State1 = register_pending_request(State0, Corr, From, []),
     State2 = inc_correlation_id(State1),
     {noreply, State2};
 handle_call(
@@ -330,7 +326,7 @@ handle_call(
         Corr, Stream, SubscriptionId, OffsetDefinition, Credit, Properties
     ),
     ok = send_message(Socket, Subscribe),
-    State1 = register_pending(State0, Corr, From, {Subscriber, SubscriptionId}),
+    State1 = register_pending_request(State0, Corr, From, {Subscriber, SubscriptionId}),
     State2 = inc_correlation_id(State1),
     {noreply, State2};
 handle_call({store_offset, PublisherReference, Stream, Offset}, _From, State) ->
@@ -342,7 +338,7 @@ handle_call({query_offset, PublisherReference, Stream}, From, State0) ->
     Socket = State0#state.socket,
     QueryOffset = lake_messages:query_offset(Corr, PublisherReference, Stream),
     ok = send_message(Socket, QueryOffset),
-    State1 = register_pending(State0, Corr, From, []),
+    State1 = register_pending_request(State0, Corr, From, []),
     State2 = inc_correlation_id(State1),
     {noreply, State2};
 handle_call({unsubscribe, SubscriptionId}, From, State0) ->
@@ -350,7 +346,7 @@ handle_call({unsubscribe, SubscriptionId}, From, State0) ->
     Socket = State0#state.socket,
     Unsubscribe = lake_messages:unsubscribe(Corr, SubscriptionId),
     ok = send_message(Socket, Unsubscribe),
-    State1 = register_pending(State0, Corr, From, SubscriptionId),
+    State1 = register_pending_request(State0, Corr, From, SubscriptionId),
     State2 = inc_correlation_id(State1),
     {noreply, State2};
 handle_call({metadata, Streams}, From, State0) ->
@@ -358,7 +354,7 @@ handle_call({metadata, Streams}, From, State0) ->
     Socket = State0#state.socket,
     Metadata = lake_messages:metadata(Corr, Streams),
     ok = send_message(Socket, Metadata),
-    State1 = register_pending(State0, Corr, From, []),
+    State1 = register_pending_request(State0, Corr, From, []),
     State2 = inc_correlation_id(State1),
     {noreply, State2};
 handle_call(Call, _From, State) ->
@@ -416,7 +412,7 @@ forward_to_receivers([{{subscription_id, Id}, Message} | Rest], State) ->
     Subscriber ! Message,
     forward_to_receivers(Rest, State);
 forward_to_receivers([{{correlation_id, Corr}, Message} | Rest], State) ->
-    #{Corr := {From, _Extra}} = State#state.pending,
+    #{Corr := {From, _Extra}} = State#state.pending_requests,
     gen_server:reply(From, Message),
     forward_to_receivers(Rest, deregister_pending(Corr, State));
 forward_to_receivers([{{publisher_id, Id}, Message} | Rest], State) ->
@@ -424,19 +420,19 @@ forward_to_receivers([{{publisher_id, Id}, Message} | Rest], State) ->
     Publisher ! Message,
     forward_to_receivers(Rest, State);
 forward_to_receivers([{{unsubscribe_response, Corr, _}, Message} | Rest], State) ->
-    #{Corr := {From, _Extra}} = State#state.pending,
+    #{Corr := {From, _Extra}} = State#state.pending_requests,
     gen_server:reply(From, Message),
     forward_to_receivers(Rest, deregister_pending(Corr, State)).
 
 deregister_pending(Key, State) ->
     #state{
-        pending = #{Key := {From, _Extra}}
+        pending_requests = #{Key := {From, _Extra}}
     } = State,
     State#state{
-        pending =
+        pending_requests =
             maps:remove(
                 From,
-                maps:remove(Key, State#state.pending)
+                maps:remove(Key, State#state.pending_requests)
             )
     }.
 
@@ -460,11 +456,11 @@ wait_for_message(Socket) ->
         {error, timeout}
     end.
 
-register_pending(State, Corr, From, Extra) ->
-    BlockedCallers0 = State#state.pending,
+register_pending_request(State, Corr, From, Extra) ->
+    BlockedCallers0 = State#state.pending_requests,
     BlockedCallers = BlockedCallers0#{Corr => {From, Extra}, From => Corr},
     State#state{
-        pending = BlockedCallers
+        pending_requests = BlockedCallers
     }.
 
 inc_correlation_id(State) ->
@@ -475,7 +471,7 @@ update_subscriptions(State, []) ->
     State;
 update_subscriptions(State, [{{unsubscribe_response, Corr, ?RESPONSE_OK}, _} | Rest]) ->
     #state{
-        pending = #{Corr := {_From, SubscriptionId}},
+        pending_requests = #{Corr := {_From, SubscriptionId}},
         subscriptions = Subscriptions
     } = State,
     update_subscriptions(
@@ -488,7 +484,7 @@ update_subscriptions(State, [{{correlation_id, Corr}, Message} | Rest]) ->
     case is_positive_subscribe_response(Message) of
         true ->
             #state{
-                pending = #{Corr := {_From, {Subscriber, SubscriptionId}}},
+                pending_requests = #{Corr := {_From, {Subscriber, SubscriptionId}}},
                 subscriptions = Subscriptions
             } = State,
             update_subscriptions(
@@ -515,7 +511,7 @@ update_publishers(State, [{{correlation_id, Corr}, Message} | Rest]) ->
     case is_positive_publisher_response(Message) of
         true ->
             #state{
-                pending = #{Corr := {_From, {Publisher, PublisherId}}},
+                pending_requests = #{Corr := {_From, {Publisher, PublisherId}}},
                 publishers = Publishers
             } = State,
             update_publishers(
