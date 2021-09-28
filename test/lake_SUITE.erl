@@ -85,8 +85,6 @@ subscribe_and_publish(_Config) ->
     } = Info,
     ok = lake:unsubscribe(Connection, SubscriptionId),
     ok = lake:delete_publisher(Connection, PublisherId),
-    %% FIXME check state after deletion - maybe eunit..
-    %% FIXME check that no pending requests are still present in the state
     ok = lake:delete(Connection, Stream),
     ok = lake:stop(Connection),
     ok.
