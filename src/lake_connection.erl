@@ -194,7 +194,14 @@ handle_continue({CorrelationId, Heartbeat}, wait_for_socket) ->
     receive
         {{socket, Socket}, Sender} ->
             Sender ! received_socket,
-            {ok, HeartbeatProcess} = lake_heartbeat:start_link(Heartbeat, self()),
+            HeartbeatProcess =
+                if
+                    Heartbeat > 0 ->
+                        {ok, HeartbeatProcess0} = lake_heartbeat:start_link(Heartbeat, self()),
+                        HeartbeatProcess0;
+                    true ->
+                        undefined
+                end,
             {noreply, #state{
                 correlation_id = CorrelationId, socket = Socket, heartbeat = HeartbeatProcess
             }}
@@ -449,6 +456,8 @@ forward_and_reply1({reply, From}, Message) ->
     gen_server:reply(From, Message);
 forward_and_reply1({cast, Pid}, Message) ->
     gen_server:cast(Pid, Message);
+forward_and_reply1(ignore, _Message) ->
+    ok;
 forward_and_reply1(List, Message) when is_list(List) ->
     lists:foreach(fun(Recipient) -> forward_and_reply1(Recipient, Message) end, List).
 
@@ -486,7 +495,10 @@ recipient_from_message({close, _, _, _}, _) ->
     %% RabbitMQ sent us a message to close the connection; we need to handle this separately.
     [];
 recipient_from_message({heartbeat}, State) ->
-    {cast, State#state.heartbeat}.
+    case State#state.heartbeat of
+        undefined -> ignore;
+        Pid -> {cast, Pid}
+    end.
 
 recipient_from_corr(Corr, State) ->
     #state{
