@@ -49,9 +49,10 @@ handle_info(measure_throughput, State) ->
     Now = erlang:monotonic_time(milli_seconds),
 
     Rate1 = atomics:get(Rate0, 1),
-    Rate2 = new_rate(Rate1, LastMessageAt, Now),
+    Diff_ms = Now - LastMessageAt,
+    Rate2 = new_rate(Rate1, Diff_ms),
     MeasuredRate_s = MessageCount / ((Now - LastMeasurementAt) / 1000),
-    io:format("Throughput: ~p msgs/s, new target rate ~p~n", [MeasuredRate_s, Rate2]),
+    benchmark_collector:collect({read, {Now, {MessageCount, Diff_ms / 1000, MeasuredRate_s}}}),
     lake:credit_async(Connection, subscription_id(), 10 * Rate2),
     atomics:put(Rate0, 1, Rate2),
     {noreply, State#state{message_count = 0, last_measurement_at = Now}};
@@ -63,11 +64,9 @@ handle_info({deliver, 1, OsirisChunk}, State) ->
         last_message_at = Now
     }}.
 
-new_rate(CurrentRate, LastMessageAt, Now) ->
+new_rate(CurrentRate, Diff_ms) ->
     %% If the last message arrived a long time ago, the publisher can publish a lot more messages.
     %% If the last message arrived just yet, any component here is overwhelmed.
-    Diff_ms = Now - LastMessageAt,
-
     if
         Diff_ms > 750 ->
             CurrentRate * 4;

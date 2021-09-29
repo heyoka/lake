@@ -47,14 +47,16 @@ handle_info(send_messages, State = #state{}) ->
         chunk_size = ChunkSize,
         connection = Connection
     } = State,
-    {ok, Sequence} = lake:query_publisher_sequence(
-        Connection, publisher_reference(), benchmark:stream()
-    ),
-    logger:debug("Publisher ~p messages in total", [Sequence]),
-
+    Now = erlang:monotonic_time(milli_seconds),
     Rate = atomics:get(Rate0, 1),
-    {PublishId, Messages} = build_messages(Rate, PublishId0, Message, []),
-    send_in_chunks(Connection, chunkify(Messages, ChunkSize)),
+    {Time, PublishId} = timer:tc(fun() ->
+        {PublishId, Messages} = build_messages(Rate, PublishId0, Message, []),
+        send_in_chunks(Connection, chunkify(Messages, ChunkSize)),
+        PublishId
+    end),
+    Time_s = Time / 1000000,
+    MeasuredRate_s = Rate / Time_s,
+    benchmark_collector:collect({wrote, {Now, {Rate, Time_s, MeasuredRate_s}}}),
     {noreply, State#state{publish_id = PublishId}}.
 
 build_messages(0, PublishId, _Message, Messages) ->

@@ -16,6 +16,7 @@ main(Args) ->
     PublishRate = atomics:new(1, [{signed, false}]),
     atomics:put(PublishRate, 1, 10),
 
+    {ok, Collector} = benchmark_collector:start_link(),
     {ok, Subscriber} = benchmark_subscriber:start_link([
         {rabbitmq, [Host, Port, User, Password, Vhost]},
         {rate, PublishRate},
@@ -32,6 +33,7 @@ main(Args) ->
 
     benchmark_subscriber:stop(Subscriber),
     benchmark_publisher:stop(Publisher),
+    benchmark_collector:stop(Collector),
 
     ok = lake:delete(Connection, stream()),
     ok = lake:stop(Connection),
