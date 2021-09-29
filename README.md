@@ -9,7 +9,8 @@ A stream feeds into a lake, and a lake feeds into a stream.
 ### Rebar3
 
 ```erlang
-{deps, [lake]}
+%% rebar.config
+{deps, [lake]}.
 ```
 
 ### Mix
