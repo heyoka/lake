@@ -116,25 +116,25 @@ parse(
     <<?RESPONSE:1, ?PEER_PROPERTIES:15, ?VERSION:16, Corr:32, ResponseCode:16,
         _PeerPropertiesCount:32, PeerProperties/binary>>
 ) ->
-    {ok, {peer_properties_response, Corr, ResponseCode, parse_map(PeerProperties)}};
+    {peer_properties_response, Corr, ResponseCode, parse_map(PeerProperties)};
 parse(
     <<?RESPONSE:1, ?SASL_HANDSHAKE:15, ?VERSION:16, Corr:32, ResponseCode:16, _MechanismsCount:32,
         Mechanisms/binary>>
 ) ->
-    {ok, {sasl_handshake_response, Corr, ResponseCode, parse_list_of_strings(Mechanisms)}};
+    {sasl_handshake_response, Corr, ResponseCode, parse_list_of_strings(Mechanisms)};
 parse(
     <<?RESPONSE:1, ?SASL_AUTHENTICATE:15, ?VERSION:16, Corr:32, ResponseCode:16, SaslOpaque/binary>>
 ) ->
-    {ok, {sasl_authenticate_response, Corr, ResponseCode, SaslOpaque}};
+    {sasl_authenticate_response, Corr, ResponseCode, SaslOpaque};
 parse(
     <<?REQUEST:1, ?TUNE:15, ?VERSION:16, FrameMax:32, Heartbeat:32>>
 ) ->
-    {ok, {tune, FrameMax, Heartbeat}};
+    {tune, FrameMax, Heartbeat};
 parse(
     <<?RESPONSE:1, ?OPEN:15, ?VERSION:16, Corr:32, ?RESPONSE_OK:16, _ConnectionPropertiesCount:32,
         ConnectionProperties/binary>>
 ) ->
-    {ok, {open_response, Corr, ?RESPONSE_OK, parse_map(ConnectionProperties)}};
+    {open_response, Corr, ?RESPONSE_OK, parse_map(ConnectionProperties)};
 parse(
     <<?RESPONSE:1, ?CLOSE:15, ?VERSION:16, Corr:32, ResponseCode:16>>
 ) ->
@@ -147,7 +147,7 @@ parse(
 parse(
     <<?RESPONSE:1, ?OPEN:15, ?VERSION:16, Corr:32, ResponseCode:16>>
 ) ->
-    {ok, {open_response, Corr, ResponseCode}};
+    {open_response, Corr, ResponseCode};
 parse(
     <<?HEARTBEAT:16, ?VERSION:16>>
 ) ->
