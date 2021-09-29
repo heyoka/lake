@@ -12,4 +12,5 @@ lake:
     RABBITMQ_HOST: rabbitmq
   script:
   - rebar3 ct
+  - rebar3 eunit
   - rebar3 fmt --check
