@@ -1,6 +1,6 @@
 # lake
 
-An Erlang RabbitMQ Streams client.
+An Erlang RabbitMQ Streams client. A stream feeds into a lake, and a lake feeds into a stream.
 
 ## Build
 
