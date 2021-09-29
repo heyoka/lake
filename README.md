@@ -4,6 +4,24 @@ An Erlang client for RabbitMQ's [stream plugin](https://www.rabbitmq.com/stream.
 
 A stream feeds into a lake, and a lake feeds into a stream.
 
+## Installation
+
+### Rebar3
+
+```erlang
+{deps, [lake]}
+```
+
+### Mix
+
+```elixir
+defp deps do
+  [
+      {:lake, "~> 0.1"}
+  ]
+end
+```
+
 ## Usage
 
 ```erlang
