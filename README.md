@@ -2,6 +2,30 @@
 
 An Erlang RabbitMQ Streams client. A stream feeds into a lake, and a lake feeds into a stream.
 
+## Usage
+
+```erlang
+example() ->
+    {ok, Connection} = lake:connect(host(), port(), <<"guest">>, <<"guest">>, <<"/">>),
+    ok = lake:create(Connection, <<"my-stream">>, []),
+    ok = lake:subscribe(Connection, <<"my-stream">>, SubscriptionId = 1, first, 1000, []),
+    ok = lake:declare_publisher(Connection, <<"my-stream">>, PublisherId = 1, <<"my-publisher">>),
+    [{1, ok}] = lake:publish_sync(Connection, PublisherId = 1, [{_PublishingId = 1, <<"Hello, World!">>}]),
+    {ok, {[Message], _}} =
+        receive
+            {deliver, _ResponseCode, OsirisChunk} ->
+                lake:chunk_to_messages(OsirisChunk)
+        after 5000 ->
+            exit(timeout)
+        end,
+    io:format("Received: ~p~n", [Message]),
+    ok = lake:unsubscribe(Connection, SubscriptionId),
+    ok = lake:delete_publisher(Connection, PublisherId),
+    ok = lake:delete(Connection, Stream),
+    ok = lake:stop(Connection),
+    ok.
+```
+
 ## Build
 
     $ rebar3 compile
