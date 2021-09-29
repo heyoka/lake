@@ -41,19 +41,14 @@ connect(Host, User, Password, Vhost) ->
 %% @see connect/4
 %% @see connect/6
 connect(Host, Port, User, Password, Vhost) ->
-    lake_connection:connect(normalize_host(Host), Port, User, Password, Vhost, []).
+    connect(Host, Port, User, Password, Vhost, []).
 
 %%
 %% @doc Establish a connection.
 %% @see connect/4
 %% @see connect/5
 connect(Host, Port, User, Password, Vhost, Options) ->
-    lake_connection:connect(normalize_host(Host), Port, User, Password, Vhost, Options).
-
-normalize_host(Host) when is_binary(Host) ->
-    binary_to_list(Host);
-normalize_host(Host) when is_list(Host); is_atom(Host); is_tuple(Host) ->
-    Host.
+    lake_connection:connect(lake_utils:normalize_host(Host), Port, User, Password, Vhost, Options).
 
 %% @doc Stop a connection.
 stop(Connection) ->

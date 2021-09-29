@@ -1,6 +1,6 @@
 -module(lake_utils).
 
--export([response_code_to_atom/1, send_message/2]).
+-export([response_code_to_atom/1, send_message/2, normalize_host/1]).
 
 -include("response_codes.hrl").
 
@@ -47,3 +47,8 @@ frame(Message) when is_binary(Message) ->
 
 send_message(Socket, Message) ->
     gen_tcp:send(Socket, frame(Message)).
+
+normalize_host(Host) when is_binary(Host) ->
+    binary_to_list(Host);
+normalize_host(Host) when is_list(Host); is_atom(Host); is_tuple(Host) ->
+    Host.
