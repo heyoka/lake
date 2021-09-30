@@ -4,6 +4,7 @@
 -export([
     declare_publisher/4,
     publish_sync/3,
+    publish_async/3,
     query_publisher_sequence/3,
     delete_publisher/2,
     credit_async/3,
@@ -66,11 +67,14 @@ declare_publisher(Connection, Stream, PublisherId, PublisherReference) ->
     end.
 
 publish_sync(Connection, PublisherId, Messages) ->
-    %% FIXME encode messages here?
+    ok = publish_async(Connection, PublisherId, Messages),
     %% We need to wait for all confirmations
     MessageCount = length(Messages),
-    ok = gen_server:call(Connection, {publish_async, PublisherId, Messages}),
     wait_for_confirmations(MessageCount, []).
+
+publish_async(Connection, PublisherId, Messages) ->
+    %% FIXME encode messages here?
+    ok = gen_server:call(Connection, {publish_async, PublisherId, Messages}).
 
 wait_for_confirmations(0, PublishingIds) ->
     [

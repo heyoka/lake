@@ -8,6 +8,7 @@
 -export([
     declare_publisher/4,
     publish_sync/3,
+    publish_async/3,
     query_publisher_sequence/3,
     delete_publisher/2,
     credit_async/3,
@@ -67,6 +68,12 @@ declare_publisher(Connection, Stream, PublisherId, PublisherReference) when
 %%
 publish_sync(Connection, PublisherId, Messages) when is_integer(PublisherId), is_list(Messages) ->
     lake_connection:publish_sync(Connection, PublisherId, Messages).
+
+%%
+%% @doc Publish a message asynchronously.
+%%
+publish_async(Connection, PublisherId, Messages) when is_integer(PublisherId), is_list(Messages) ->
+    lake_connection:publish_async(Connection, PublisherId, Messages).
 
 %%
 %% @doc Query a publisher's sequence.

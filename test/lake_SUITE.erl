@@ -16,7 +16,8 @@
     delete_without_create/1,
     metadata_update/1,
     close/1,
-    heartbeat/1
+    heartbeat/1,
+    async_publish/1
 ]).
 
 -include("response_codes.hrl").
@@ -36,7 +37,8 @@ all() ->
         delete_without_create,
         metadata_update,
         close,
-        heartbeat
+        heartbeat,
+        async_publish
     ].
 
 host() ->
@@ -245,6 +247,27 @@ heartbeat(_Config) ->
         {heartbeat, 2}
     ]),
     timer:sleep(4000),
+    ok = lake:stop(Connection),
+    ok.
+
+async_publish(_Config) ->
+    {ok, Connection} = lake:connect(host(), port(), <<"guest">>, <<"guest">>, <<"/">>),
+    Stream = stream(),
+    ok = lake:create(Connection, Stream, []),
+    PublisherId = 1,
+    PublisherReference = <<"my-publisher">>,
+    ok = lake:declare_publisher(Connection, Stream, PublisherId, PublisherReference),
+    Message = <<"Hello, world!">>,
+    ok = lake:publish_async(Connection, PublisherId, [{1, Message}]),
+    receive
+        {publish_confirm, PublisherId, _PublishingIdCount = 1, PublishingIds = [1]} ->
+            ok;
+        Unexpected ->
+            exit({unexpected, Unexpected})
+    after 1000 -> exit(timeout)
+    end,
+    ok = lake:delete_publisher(Connection, PublisherId),
+    ok = lake:delete(Connection, Stream),
     ok = lake:stop(Connection),
     ok.
 
