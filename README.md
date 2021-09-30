@@ -71,7 +71,7 @@ $ rebar3 escriptize && _build/default/bin/benchmark streams://172.17.0.2:5552 gu
 ===> Analyzing applications...
 ===> Compiling benchmark
 ===> Building escript for benchmark...
-Running benchmark. Hit enter to stop
+Running benchmark with messages of size 350B and one publisher, one subscriber. Hit enter to stop
 2: wrote 40 msgs in 0.00306s (13071 msgs/s), read 0 msgs with 0.998s remaining to full second (0.0 msgs/s)
 3: wrote 160 msgs in 0.008447s (18941 msgs/s), read 40 msgs with 0.99s remaining to full second (40.0 msgs/s)
 4: wrote 640 msgs in 0.009589s (66743 msgs/s), read 160 msgs with 0.985s remaining to full second (160.0 msgs/s)

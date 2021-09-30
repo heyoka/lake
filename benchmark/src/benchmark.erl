@@ -10,7 +10,12 @@ main(Args) ->
     lake:delete(Connection, stream()),
     ok = lake:create(Connection, stream(), [{<<"max-age">>, <<"1h">>}]),
 
-    io:format("Running benchmark. Hit enter to stop~n"),
+    Message = list_to_binary(lists:duplicate(350, $a)),
+    Size = byte_size(Message),
+    io:format(
+        "Running benchmark with messages of size ~pB and one publisher, one subscriber. Hit enter to stop~n",
+        [Size]
+    ),
 
     %% We start with 10 msgs/s
     PublishRate = atomics:new(1, [{signed, false}]),
@@ -25,7 +30,7 @@ main(Args) ->
     {ok, Publisher} = benchmark_publisher:start_link([
         {rabbitmq, [Host, Port, User, Password, Vhost]},
         {rate, PublishRate},
-        {message, list_to_binary(lists:duplicate(350, $a))},
+        {message, Message},
         {chunk_size, 1000}
     ]),
 
