@@ -71,6 +71,6 @@ print(TimestampS, State) ->
             trunc(MeasuredWriteRate),
             MessagesRead,
             TimeForReads,
-            MeasuredReadRate
+            trunc(MeasuredReadRate)
         ]
     ).
