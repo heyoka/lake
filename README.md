@@ -1,5 +1,7 @@
 # lake
 
+imported from https://gitlab.com/evnu/lake
+
 An Erlang client for RabbitMQ's [stream plugin](https://www.rabbitmq.com/stream.html).
 
 A stream feeds into a lake, and a lake feeds into a stream.
